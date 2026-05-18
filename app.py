@@ -12,7 +12,6 @@ st.set_page_config(page_title="Gouldian Invest", page_icon="🦅", layout="wide"
 
 @st.cache_resource
 def init_connection():
-    # Puxa as chaves cadastradas na aba "Secrets" do Streamlit Cloud
     url = st.secrets["SUPABASE_URL"]
     key = st.secrets["SUPABASE_KEY"]
     return create_client(url, key)
@@ -20,11 +19,10 @@ def init_connection():
 try:
     supabase = init_connection()
 except Exception as e:
-    st.error("Erro ao conectar ao Banco de Dados. Verifique os Secrets do Streamlit.")
+    st.error(f"Erro de configuração inicial nas chaves do Secrets: {e}")
     st.stop()
 
 def hash_senha(senha):
-    """Criptografa a senha para não ficar exposta no banco de dados"""
     return hashlib.sha256(senha.encode()).hexdigest()
 
 # ==========================================
@@ -65,50 +63,56 @@ if not st.session_state['logged_in']:
             if st.button("Entrar", type="primary", use_container_width=True):
                 if email_input and senha_input:
                     senha_criptografada = hash_senha(senha_input)
-                    # Busca usuário no banco
-                    resposta = supabase.table("usuarios").select("*").eq("email", email_input).execute()
                     
-                    if len(resposta.data) > 0:
-                        user_db = resposta.data[0]
-                        if user_db["senha"] == senha_criptografada:
-                            st.session_state['logged_in'] = True
-                            st.session_state['user_email'] = email_input
-                            
-                            # Carrega dados salvos
-                            dados_salvos = user_db.get("dados", {})
-                            if dados_salvos:
-                                st.session_state['historico_rolagens'] = dados_salvos.get('historico_rolagens', [])
-                                st.session_state['caixa_acumulado_calls'] = dados_salvos.get('caixa_acumulado_calls', 0.0)
-                                st.session_state['caixa_proventos'] = dados_salvos.get('caixa_proventos', 0.0)
-                                st.session_state['mes_operacao'] = dados_salvos.get('mes_operacao', 1)
-                            
-                            st.rerun()
+                    try:
+                        resposta = supabase.table("usuarios").select("*").eq("email", email_input).execute()
+                        
+                        if len(resposta.data) > 0:
+                            user_db = resposta.data[0]
+                            if user_db["senha"] == senha_criptografada:
+                                st.session_state['logged_in'] = True
+                                st.session_state['user_email'] = email_input
+                                
+                                dados_salvos = user_db.get("dados", {})
+                                if dados_salvos:
+                                    st.session_state['historico_rolagens'] = dados_salvos.get('historico_rolagens', [])
+                                    st.session_state['caixa_acumulado_calls'] = dados_salvos.get('caixa_acumulado_calls', 0.0)
+                                    st.session_state['caixa_proventos'] = dados_salvos.get('caixa_proventos', 0.0)
+                                    st.session_state['mes_operacao'] = dados_salvos.get('mes_operacao', 1)
+                                
+                                st.rerun()
+                            else:
+                                st.error("Senha incorreta.")
                         else:
-                            st.error("Senha incorreta.")
-                    else:
-                        st.error("Usuário não encontrado. Crie uma conta.")
+                            st.error("Usuário não encontrado. Crie uma conta.")
+                    except Exception as err_login:
+                        st.error(f"Erro ao consultar o banco de dados: {err_login}")
                 else:
                     st.warning("Preencha e-mail e senha.")
                     
         else:
             if st.button("Cadastrar", type="primary", use_container_width=True):
                 if email_input and senha_input:
-                    verifica = supabase.table("usuarios").select("email").eq("email", email_input).execute()
-                    if len(verifica.data) > 0:
-                        st.error("Este e-mail já está cadastrado.")
-                    else:
-                        senha_criptografada = hash_senha(senha_input)
-                        novo_user = {
-                            "email": email_input,
-                            "senha": senha_criptografada,
-                            "dados": {}
-                        }
-                        supabase.table("usuarios").insert(novo_user).execute()
-                        st.success("Conta criada com sucesso! Mude para 'Login' e acesse.")
+                    try:
+                        verifica = supabase.table("usuarios").select("email").eq("email", email_input).execute()
+                        if len(verifica.data) > 0:
+                            st.error("Este e-mail já está cadastrado.")
+                        else:
+                            senha_criptografada = hash_senha(senha_input)
+                            novo_user = {
+                                "email": email_input,
+                                "senha": senha_criptografada,
+                                "dados": {}
+                            }
+                            supabase.table("usuarios").insert(novo_user).execute()
+                            st.success("Conta criada com sucesso! Mude para 'Login' e acesse.")
+                    except Exception as err_cadastro:
+                        st.error(f"Erro detalhado do Banco de Dados: {err_cadastro}")
+                        st.info("💡 Dica: Verifique se você desativou o 'RLS' na sua tabela do Supabase.")
                 else:
                     st.warning("Preencha e-mail e senha para cadastrar.")
     
-    st.stop() # Trava a execução até logar
+    st.stop()
 
 # ==========================================
 # TELA PRINCIPAL (APÓS LOGIN)
@@ -127,8 +131,11 @@ if col_user2.button("💾 Salvar Estudo na Nuvem", type="primary"):
         "caixa_proventos": st.session_state['caixa_proventos'],
         "mes_operacao": st.session_state['mes_operacao']
     }
-    supabase.table("usuarios").update({"dados": dados_para_nuvem}).eq("email", st.session_state['user_email']).execute()
-    st.success("Progresso salvo com sucesso!")
+    try:
+        supabase.table("usuarios").update({"dados": dados_para_nuvem}).eq("email", st.session_state['user_email']).execute()
+        st.success("Progresso salvo com sucesso!")
+    except Exception as err_salvar:
+        st.error(f"Erro ao salvar na nuvem: {err_salvar}")
 
 if col_user3.button("Sair da Conta"):
     st.session_state['logged_in'] = False
@@ -207,7 +214,6 @@ with col2:
     preco_put = st.number_input("Prêmio Pago na Put (R$)", value=st.session_state.get('preco_put_tela', 0.0), format="%.2f")
     strike_put = st.number_input("Strike da Put (R$)", value=0.0, format="%.2f")
 
-# Prevenção de divisão por zero e setup de variáveis padrões
 volume_acao = volume_put = tx_b3_entrada_acao = tx_b3_entrada_put = corretagem_fase1 = taxas_iniciais_totais = 0.0
 custo_base_bruto = custo_base_ajustado = strike_minimo = preco_medio_atual = 0.0
 caixa_total_gerado = st.session_state['caixa_acumulado_calls'] + st.session_state['caixa_proventos']
@@ -298,7 +304,6 @@ deseja_exercer_put = False
 if preco_vencimento <= strike_put and strike_put > 0:
     deseja_exercer_put = st.checkbox("🎯 Deseja exercer a Put de Proteção neste cenário de queda?", value=False)
 
-# Configurações padrão para evitar erros visuais se QTD for 0
 receita_venda_ativo = taxa_saida_b3 = corretagem_saida = 0.0
 cenario_nome = "Aguardando preenchimento"
 
