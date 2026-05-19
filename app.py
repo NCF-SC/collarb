@@ -239,7 +239,7 @@ with st.sidebar.expander("🏦 Benchmark Selic", expanded=False):
     meta_mensal = juros_liquido_am * 100
 
 # ==========================================
-# FASE 1: MONTAGEM DO MODELO (TAB-OPTIMIZED)
+# FASE 1: MONTAGEM DO MODELO
 # ==========================================
 st.header("📦 Fase 1: Parâmetros e Alvos da Operação")
 
@@ -300,7 +300,7 @@ with col3:
 st.markdown("---")
 
 # ==========================================
-# FASE 2: REMUNERAÇÃO DE CAIXA MENSAL (COM VERIFICADOR DE SELIC)
+# FASE 2: REMUNERAÇÃO DE CAIXA MENSAL
 # ==========================================
 st.header("⚡ Fase 2: Distribuição de Caixa Mensal")
 tab1, tab2 = st.tabs(["Lançamento de Call Mensal", "Proventos Recebidos"])
@@ -325,13 +325,12 @@ with tab1:
         st.success(f"💸 Crédito Líquido Operacional (D+1): **R$ {receita_liquida_call_pre_ir:,.2f}**")
         st.caption(f"*(Amortização efetiva descontando IR da Opção: R$ {receita_realmente_liquida_call:,.2f})*")
         
-        # ALERTA ESTRATÉGICO: Verificador do Custo de Oportunidade Mensal (Selic)
         if premio_call > 0 and custo_base_bruto > 0:
             rendimento_call_mes = (receita_realmente_liquida_call / custo_base_bruto) * 100
             if rendimento_call_mes < meta_mensal:
-                st.warning(f"⚠️ **Prêmio Abaixo do Custo de Oportunidade:** A taxa líquida capturada com esta Call ({rendimento_call_mes:.2f}%) **não supera a Selic** do mês ({meta_mensal:.2f}%). Em caso de mercado lateral, o capital não compensa o custo de oportunidade. Avalie buscar um prêmio maior.")
+                st.warning(f"⚠️ **Atenção (Custo de Oportunidade):** A taxa líquida desta Call ({rendimento_call_mes:.2f}%) está **abaixo** da Selic do mês ({meta_mensal:.2f}%). Tente um prêmio maior.")
             else:
-                st.info(f"🎯 **Prêmio Eficiente:** A taxa líquida desta Call ({rendimento_call_mes:.2f}%) garante o pagamento do custo de oportunidade (Selic: {meta_mensal:.2f}%) logo na entrada.")
+                st.info(f"🎯 **Prêmio Eficiente:** A taxa líquida desta Call ({rendimento_call_mes:.2f}%) supera a Selic mensal ({meta_mensal:.2f}%).")
         
         if strike_call > 0 and strike_call < strike_minimo:
             st.error("🚨 O Strike selecionado reduz a margem mínima de segurança do Capital Inicial!")
@@ -355,7 +354,7 @@ with tab2:
 st.markdown("---")
 
 # ==========================================
-# FASE 3: SIMULADOR DE PAYOFF COMPLETO
+# FASE 3: SIMULADOR DE PAYOFF E DRE
 # ==========================================
 st.header("🔮 Fase 3: Simulador Patrimonial de Payoff")
 
@@ -559,11 +558,11 @@ if st.session_state['historico_rolagens']:
         st.rerun()
 
 # ==========================================
-# 6. PAINEL COMPARATIVO DE PERFORMANCE MULTI-INDICADORES GLOBAIS
+# 6. PAINEL COMPARATIVO DE PERFORMANCE E TRIBUTAÇÃO
 # ==========================================
 st.markdown("---")
 st.subheader("🏆 Painel Comparativo de Performance Absoluta")
-st.markdown("Análise de geração de caixa acumulado da estratégia vs Benchmarks Globais no mesmo período.")
+st.markdown("Análise da geração de caixa acumulada, Alpha de mercado e Provisões de DARF.")
 
 @st.cache_data(ttl=3600)
 def buscar_indicadores_mercado():
@@ -579,7 +578,12 @@ def buscar_indicadores_mercado():
 perf_ibov, perf_usd = buscar_indicadores_mercado()
 retorno_caixa_puro = (caixa_total_gerado / custo_base_bruto) * 100 if custo_base_bruto > 0 else 0.0
 
-c_perf1, c_perf2, c_perf3, c_perf4 = st.columns(4)
+# Cálculo do Alpha e DARF do mês
+alpha_gerado = retorno_caixa_puro - meta_acumulada_mes
+darf_mes_atual = ir_isolado_call_po if 'ir_isolado_call_po' in locals() else 0.0
+
+c_perf1, c_perf2, c_perf3, c_perf4, c_perf5, c_perf6 = st.columns(6)
+
 c_perf1.metric(
     label="Caixa Gerado (Gouldian)", 
     value=f"{retorno_caixa_puro:.2f}%", 
@@ -588,15 +592,27 @@ c_perf1.metric(
 c_perf2.metric(
     label="Benchmark Selic Líquida", 
     value=f"{meta_acumulada_mes:.2f}%", 
-    delta=f"Alvo {tipo_juros.split()[0]}",
+    delta=f"Alvo Acumulado",
     delta_color="inverse"
 )
 c_perf3.metric(
-    label="Ibovespa (Mercado de Ações)", 
+    label="Alpha (Excesso de Retorno)", 
+    value=f"{alpha_gerado:+.2f}%", 
+    delta="Acima da Selic" if alpha_gerado >= 0 else "Abaixo da Selic",
+    delta_color="normal"
+)
+c_perf4.metric(
+    label="DARF Opções (Mês Atual)", 
+    value=f"R$ {darf_mes_atual:,.2f}", 
+    delta="A pagar no mês seguinte",
+    delta_color="inverse"
+)
+c_perf5.metric(
+    label="Ibovespa (Ações)", 
     value=f"{perf_ibov:.2f}%", 
     delta="1 Mês"
 )
-c_perf4.metric(
+c_perf6.metric(
     label="Câmbio Dólar (USD/BRL)", 
     value=f"{perf_usd:.2f}%", 
     delta="1 Mês"
