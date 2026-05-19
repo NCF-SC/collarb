@@ -416,18 +416,19 @@ lucro_liquido_final = lucro_bruto_operacao - ir_devido_operacao
 
 rentabilidade_sobre_capital_inicial = (lucro_liquido_final / custo_base_bruto) * 100 if custo_base_bruto > 0 else 0.0
 
-meses_decorridos = len(st.session_state['historico_rolagens']) + 1
+# LÓGICA CORRIGIDA: Fase 3 projeta +1 mês pois simula o final do ciclo atual
+meses_projetados = len(st.session_state['historico_rolagens']) + 1
 if "Simples" in tipo_juros:
-    meta_acumulada_mes = meta_mensal * meses_decorridos
+    meta_acumulada_projetada = meta_mensal * meses_projetados
 else:
-    meta_acumulada_mes = (((1 + juros_liquido_am) ** meses_decorridos) - 1) * 100
+    meta_acumulada_projetada = (((1 + juros_liquido_am) ** meses_projetados) - 1) * 100
 
 st.markdown(f"#### Comportamento da Estrutura: **{cenario_nome}**")
 
 c_res1, c_res2, c_res3 = st.columns(3)
 c_res1.metric("Resultado Líquido Estimado", f"R$ {lucro_liquido_final:,.2f}")
 c_res2.metric("Yield on Cost (Retorno Global)", f"{rentabilidade_sobre_capital_inicial:.2f}%")
-c_res3.metric(f"Meta Balizada Selic Período", f"{meta_acumulada_mes:.2f}%")
+c_res3.metric(f"Meta Balizada Selic Projetada", f"{meta_acumulada_projetada:.2f}%")
 
 total_entradas = receita_venda_ativo + receita_liquida_call_pre_ir + caixa_total_gerado + total_proventos_liquidos + receita_venda_put_residual
 total_saidas = volume_acao + volume_put + taxas_iniciais_totais + taxa_saida_b3 + corretagem_saida + ir_devido_operacao
@@ -494,7 +495,6 @@ with c_btn2:
 
 st.write("")
 
-# SISTEMA DE GRAVAÇÃO COM IMPOSIÇÃO DE NOME E AVISOS
 col_save1, col_save2 = st.columns([3, 1])
 with col_save1:
     nome_projeto_salvar = st.text_input("Identificador/Nome Obrigatório para Gravar esta Estratégia", value=st.session_state['nome_estrategia_atual'], placeholder="Ex: PETR4 Collar Conservador 2026")
@@ -558,11 +558,11 @@ if st.session_state['historico_rolagens']:
         st.rerun()
 
 # ==========================================
-# 6. PAINEL COMPARATIVO DE PERFORMANCE E TRIBUTAÇÃO
+# 6. PAINEL COMPARATIVO DE PERFORMANCE E TRIBUTAÇÃO (CORRIGIDO)
 # ==========================================
 st.markdown("---")
 st.subheader("🏆 Painel Comparativo de Performance Absoluta")
-st.markdown("Análise da geração de caixa acumulada, Alpha de mercado e Provisões de DARF.")
+st.markdown("Análise da geração de caixa consolidada, Alpha de mercado e Provisões de DARF do mês ativo.")
 
 @st.cache_data(ttl=3600)
 def buscar_indicadores_mercado():
@@ -578,22 +578,32 @@ def buscar_indicadores_mercado():
 perf_ibov, perf_usd = buscar_indicadores_mercado()
 retorno_caixa_puro = (caixa_total_gerado / custo_base_bruto) * 100 if custo_base_bruto > 0 else 0.0
 
-# Cálculo do Alpha e DARF do mês
-alpha_gerado = retorno_caixa_puro - meta_acumulada_mes
+# LÓGICA CORRIGIDA: Fase 6 avalia a Selic apenas dos meses já consolidados na tabela. 
+# Evita descasamento de prazo e falsos Alphas negativos.
+meses_consolidados = len(st.session_state['historico_rolagens'])
+if meses_consolidados == 0:
+    meta_acumulada_realizada = 0.0
+else:
+    if "Simples" in tipo_juros:
+        meta_acumulada_realizada = meta_mensal * meses_consolidados
+    else:
+        meta_acumulada_realizada = (((1 + juros_liquido_am) ** meses_consolidados) - 1) * 100
+
+alpha_gerado = retorno_caixa_puro - meta_acumulada_realizada
 darf_mes_atual = ir_isolado_call_po if 'ir_isolado_call_po' in locals() else 0.0
 
 c_perf1, c_perf2, c_perf3, c_perf4, c_perf5, c_perf6 = st.columns(6)
 
 c_perf1.metric(
-    label="Caixa Gerado (Gouldian)", 
+    label="Caixa Gerado Consolidado", 
     value=f"{retorno_caixa_puro:.2f}%", 
     delta=f"R$ {caixa_total_gerado:,.2f}"
 )
 c_perf2.metric(
-    label="Benchmark Selic Líquida", 
-    value=f"{meta_acumulada_mes:.2f}%", 
-    delta=f"Alvo Acumulado",
-    delta_color="inverse"
+    label="Selic Líquida Consolidada", 
+    value=f"{meta_acumulada_realizada:.2f}%", 
+    delta=f"{meses_consolidados} Meses",
+    delta_color="off"
 )
 c_perf3.metric(
     label="Alpha (Excesso de Retorno)", 
@@ -604,7 +614,7 @@ c_perf3.metric(
 c_perf4.metric(
     label="DARF Opções (Mês Atual)", 
     value=f"R$ {darf_mes_atual:,.2f}", 
-    delta="A pagar no mês seguinte",
+    delta="Provisão Fiscal",
     delta_color="inverse"
 )
 c_perf5.metric(
