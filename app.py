@@ -10,7 +10,7 @@ from supabase import create_client, Client
 # ==========================================
 st.set_page_config(page_title="Gouldian Invest", page_icon="🦅", layout="wide")
 
-# CSS para ocultar completamente referências de terceiros e ferramentas de desenvolvimento
+# CSS para ocultar completamente marcas d'água e menus nativos de desenvolvimento
 REMOVER_BRANDING_CSS = """
     <style>
     #MainMenu {visibility: hidden;}
@@ -52,10 +52,26 @@ def zerar_dados_financeiros():
     st.session_state['mes_num'] = datetime.date.today().month
     st.session_state['ano_num'] = datetime.date.today().year
     st.session_state['preco_acao_tela'] = 0.0
-    st.session_state['simulador_preco'] = 0.0
 
 if 'historico_rolagens' not in st.session_state:
     zerar_dados_financeiros()
+
+# PERSISTÊNCIA AUTOMÁTICA DE LOGIN (Evita deslogar no F5/Refresh)
+if "session_token" in st.query_params and not st.session_state['logged_in']:
+    token_email = st.query_params["session_token"]
+    try:
+        resposta_auto = supabase.table("usuarios").select("*").eq("email", token_email).execute()
+        if len(resposta_auto.data) > 0:
+            user_db = resposta_auto.data[0]
+            st.session_state['logged_in'] = True
+            st.session_state['username'] = token_email.split('@')[0].capitalize()
+            dados_salvos = user_db.get("dados", {})
+            if dados_salvos:
+                st.session_state['historico_rolagens'] = dados_salvos.get('historico_rolagens', [])
+                st.session_state['mes_num'] = dados_salvos.get('mes_num', datetime.date.today().month)
+                st.session_state['ano_num'] = dados_salvos.get('ano_num', datetime.date.today().year)
+    except:
+        pass
 
 # ==========================================
 # 2. SISTEMA DE AUTENTICAÇÃO EXCLUSIVO
@@ -83,6 +99,9 @@ if not st.session_state['logged_in']:
                             if user_db["senha"] == senha_criptografada:
                                 st.session_state['logged_in'] = True
                                 st.session_state['username'] = email_input.split('@')[0].capitalize()
+                                
+                                # Define o parâmetro na URL para persistência de refresh
+                                st.query_params["session_token"] = email_input
                                 
                                 dados_salvos = user_db.get("dados", {})
                                 if dados_salvos:
@@ -118,7 +137,7 @@ if not st.session_state['logged_in']:
     st.stop()
 
 # ==========================================
-# 3. INTERFACE DE TRABALHO SECURE-LOGGED
+# 3. AMBIENTE LOGADO - CONTRAPARTIDA COMERCIAL
 # ==========================================
 st.title("Gouldian Invest | Gestão de Collar Dinâmico")
 
@@ -132,29 +151,26 @@ if col_user2.button("💾 Salvar Dados na Nuvem", type="primary", use_container_
         "ano_num": st.session_state['ano_num']
     }
     try:
-        supabase.table("usuarios").update({"dados": dados_para_nuvem}).eq("email", st.session_state['username'].lower() + "@...").execute() # Identificador reconstruído internamente
-        st.success("Estudo sincronizado com sucesso!")
-    except:
-        # Fallback de busca de e-mail estável para o update
-        try:
-            resposta_email = supabase.table("usuarios").select("email").execute()
-            for u in resposta_email.data:
-                if u["email"].startswith(st.session_state['username'].lower()):
-                    supabase.table("usuarios").update({"dados": dados_para_nuvem}).eq("email", u["email"]).execute()
-                    st.success("Estudo salvo na nuvem!")
-                    break
-        except Exception as err:
-            st.error(f"Falha ao salvar: {err}")
+        # Encontra o e-mail completo associado ao username ativo
+        resposta_email = supabase.table("usuarios").select("email").execute()
+        for u in resposta_email.data:
+            if u["email"].startswith(st.session_state['username'].lower()):
+                supabase.table("usuarios").update({"dados": dados_para_nuvem}).eq("email", u["email"]).execute()
+                st.success("Estudo salvo e sincronizado na nuvem!")
+                break
+    except Exception as err:
+        st.error(f"Falha ao salvar dados: {err}")
 
 if col_user3.button("Sair do Sistema", use_container_width=True):
     st.session_state['logged_in'] = False
+    st.query_params.clear() # Limpa o token da URL para deslogar de fato
     zerar_dados_financeiros()
     st.rerun()
 
 st.markdown("---")
 
 # ==========================================
-# RECALCULO DINÂMICO DOS ACUMULADOS (À PROVA DE ERROS E EDIÇÕES)
+# RECALCULO DINÂMICO DOS ACUMULADOS
 # ==========================================
 caixa_acumulado_calls = 0.0
 caixa_proventos = 0.0
@@ -167,7 +183,7 @@ if st.session_state['historico_rolagens']:
 caixa_total_gerado = caixa_acumulado_calls + caixa_proventos
 
 # ==========================================
-# 4. BARRA LATERAL (MONITOR DE MERCADO)
+# 4. BARRA LATERAL (MONITOR E BENCHMARK)
 # ==========================================
 st.sidebar.header("🔍 Monitor de Mercado")
 ticker_acao = st.sidebar.text_input("Ticker do Ativo", value="", placeholder="Ex: PETR4.SA")
@@ -179,7 +195,6 @@ if st.sidebar.button("Buscar Cotação"):
             acao = yf.Ticker(ticker_acao)
             preco_atual = acao.history(period="1d")['Close'].iloc[-1]
             st.session_state['preco_acao_tela'] = float(preco_atual)
-            st.session_state['simulador_preco'] = float(preco_atual) 
             st.rerun()
         except:
             st.sidebar.error("Ativo indisponível no momento.")
@@ -192,7 +207,7 @@ with st.sidebar.expander("⚙️ Custos Operacionais e IR", expanded=False):
     corretagem = st.number_input("Corretagem Fixa (R$)", value=0.00, step=1.0)
     taxa_ex_b3 = st.number_input("Taxa Exercício B3 (%)", value=0.5, step=0.1) / 100
 
-with st.sidebar.expander("🏦 Benchmark Selic", expanded=False):
+with st.sidebar.expander("🏦 Benchmark Selic", expanded=True):
     juros_bruto_aa = st.number_input("Selic Bruta (% a.a.)", value=14.50, step=0.1) / 100
     ir_renda_fixa = st.number_input("IR Renda Fixa (%)", value=22.5, step=0.5) / 100
     juros_liquido_aa = juros_bruto_aa * (1 - ir_renda_fixa)
@@ -204,7 +219,7 @@ with st.sidebar.expander("🏦 Benchmark Selic", expanded=False):
     meta_mensal = juros_liquido_am * 100
 
 # ==========================================
-# FASE 1: AQUISIÇÃO E CRONOGRAMA RETROATIVO
+# FASE 1: AQUISIÇÃO E PARÂMETROS CRONOLÓGICOS
 # ==========================================
 st.header("📦 Fase 1: Parâmetros e Alvos da Operação")
 
@@ -221,7 +236,6 @@ col1, col2, col3 = st.columns(3)
 
 with col1:
     st.subheader("1. Ativo Base")
-    # value=None garante campos totalmente limpos e fáceis de digitar sem lixo visual na frente
     preco_acao_raw = st.number_input("Preço de Compra da Ação (R$)", value=None, placeholder="Digite o preço...", format="%.2f")
     qtd_raw = st.number_input("Quantidade de Ações", value=None, placeholder="Ex: 1000", step=100)
     
@@ -266,7 +280,7 @@ with col3:
 st.markdown("---")
 
 # ==========================================
-# FASE 2: REMUNERAÇÃO (CALL E PROVENTOS)
+# FASE 2: REMUNERAÇÃO MENSAL
 # ==========================================
 st.header("⚡ Fase 2: Distribuição de Caixa Mensal")
 tab1, tab2 = st.tabs(["Lançamento de Call Mensal", "Proventos Recebidos"])
@@ -312,15 +326,21 @@ with tab2:
 st.markdown("---")
 
 # ==========================================
-# FASE 3 E 4: SIMULADOR E RELATÓRIO DINÂMICO
+# FASE 3: SIMULADOR DE PAYOFF E DRE
 # ==========================================
 st.header("🔮 Fase 3: Simulador Patrimonial de Payoff")
 
 max_slider = float(preco_acao * 2.0) if preco_acao > 0 else 100.0
-valor_default = min(st.session_state.get('simulador_preco', float(preco_acao)), max_slider)
 
-preco_vencimento = st.slider("Preço Estimado do Ativo no Vencimento (R$)", min_value=0.0, max_value=max_slider, value=float(valor_default), step=0.10)
-st.session_state['simulador_preco'] = preco_vencimento
+# O uso do 'key' nativo resolve em 100% o travamento/delay do slider (Fim do problema do duplo clique)
+preco_vencimento = st.slider(
+    "Preço Estimado do Ativo no Vencimento (R$)", 
+    min_value=0.0, 
+    max_value=max_slider, 
+    value=float(preco_acao if preco_acao > 0 else 10.0), 
+    step=0.10,
+    key="slider_payoff_estavel"
+)
 
 if preco_vencimento > strike_put and strike_put > 0:
     valor_residual_put = 0.0
@@ -334,6 +354,8 @@ if preco_vencimento <= strike_put and strike_put > 0:
     deseja_exercer_put = st.checkbox("Acionar intencionalmente o Direito de Venda (Put) para liquidação da linha de risco", value=False)
 
 receita_venda_ativo = taxa_saida_b3 = corretagem_saida = 0.0
+status_put = "Em vigor / Protegendo carteira"
+status_call = "Em aberto"
 cenario_nome = "Aguardando Alocação da Fase 1"
 
 if qtd > 0:
@@ -342,18 +364,24 @@ if qtd > 0:
         receita_venda_ativo = strike_call * qtd
         taxa_saida_b3 = receita_venda_ativo * taxa_ex_b3 
         corretagem_saida = corretagem if corretagem > 0 else 0.0
+        status_put = "Ficou fora do dinheiro (Virou pó / Custo perdido)"
+        status_call = f"Exercida a R$ {strike_call:.2f}"
         receita_venda_put_residual = 0.0 
     elif deseja_exercer_put:
         cenario_nome = "🛡️ EXECUÇÃO DO SEGURO DE PROTEÇÃO (Venda no Strike da Put)"
         receita_venda_ativo = strike_put * qtd  
         taxa_saida_b3 = receita_venda_ativo * taxa_ex_b3 
         corretagem_saida = corretagem if corretagem > 0 else 0.0
+        status_put = f"Exercida voluntariamente a R$ {strike_put:.2f}"
+        status_call = "Venceu sem valor (Virou Pó)"
         receita_venda_put_residual = 0.0  
     else:
         cenario_nome = "⚖️ MANUTENÇÃO E ROLAGEM DE POSIÇÃO (Ativo Retido / Call Virou Pó)"
         receita_venda_ativo = preco_vencimento * qtd 
         taxa_saida_b3 = receita_venda_ativo * emol_acao 
         corretagem_saida = corretagem if corretagem > 0 else 0.0
+        status_put = f"Mantida na carteira (Valorizada em tela por R$ {valor_residual_put:.2f})"
+        status_call = "Venceu sem valor (Virou Pó)"
 
 lucro_bruto_operacao = (receita_venda_ativo + receita_liquida_call_pre_ir + receita_venda_put_residual) - (custo_base_ajustado + taxa_saida_b3 + corretagem_saida)
 ir_devido_operacao = max(0.0, lucro_bruto_operacao * ir_opcoes)
@@ -374,6 +402,36 @@ c_res1.metric("Resultado Líquido Estimado", f"R$ {lucro_liquido_final:,.2f}")
 c_res2.metric("Yield on Cost (Retorno Global)", f"{rentabilidade_sobre_capital_inicial:.2f}%")
 c_res3.metric(f"Meta Balizada Selic Período", f"{meta_acumulada_mes:.2f}%")
 
+total_entradas = receita_venda_ativo + receita_liquida_call_pre_ir + caixa_total_gerado + total_proventos_liquidos + receita_venda_put_residual
+total_saidas = volume_acao + volume_put + taxas_iniciais_totais + taxa_saida_b3 + corretagem_saida + ir_devido_operacao
+
+# Restauração integral do Raio-X Detalhado (DRE COMPLETO) solicitado
+with st.expander("🔎 Ver Raio-X Detalhado do Simulado (DRE Completo)", expanded=False):
+    st.markdown(f"""
+    **1. Demonstração de Fluxo dos Derivativos:**
+    * **Seguro Longo ({ticker_put if ticker_put else 'Não informado'}):** {status_put}
+    * **Renda Curta ({ticker_call if ticker_call else 'Não informado'}):** {status_call}
+    
+    **2. Fluxo de Caixa (Entradas Realizadas + Projetadas):**
+    * (+) Valor de Liquidação/Mercado do Ativo: R$ {receita_venda_ativo:,.2f}
+    * (+) Prêmio Líquido Capturado na Call Atual (Pré-IR): R$ {receita_liquida_call_pre_ir:,.2f}
+    * (+) Proventos Líquidos Recebidos no Ciclo Atual: R$ {total_proventos_liquidos:,.2f}
+    * (+) Valor de Recuperação da Put Residual: R$ {receita_venda_put_residual:,.2f}
+    * (+) Caixa Histórico Líquido Acumulado (Calls + Proventos Passados): R$ {caixa_total_gerado:,.2f}
+    * **TOTAL DE ENTRADAS CAPTURADAS: R$ {total_entradas:,.2f}**
+    
+    **3. Fluxo de Caixa (Saídas e Custos Iniciais Imutáveis):**
+    * (-) Desembolso de Compra do Ativo Base: R$ {volume_acao:,.2f}
+    * (-) Desembolso de Compra da Put de Proteção: R$ {volume_put:,.2f}
+    * (-) Custos de Atrito Iniciais Totais (B3 + Corretagem): R$ {taxas_iniciais_totais:,.2f}
+    * (-) Taxas de Liquidação / Exercício de Saída B3: R$ {taxa_saida_b3:,.2f}
+    * (-) Custo de Corretagem de Saída: R$ {corretagem_saida:,.2f}
+    * (-) Guia de Imposto de Renda Estimada (DARF Operação): R$ {ir_devido_operacao:,.2f}
+    * **TOTAL DE SAÍDAS (Capital de Risco): R$ {total_saidas:,.2f}**
+    
+    **4. Lucro Líquido de Linha (Entradas - Saídas): R$ {lucro_liquido_final:,.2f}**
+    """)
+
 st.write("")
 c_btn1, c_btn2 = st.columns(2)
 
@@ -382,7 +440,7 @@ with c_btn1:
         if qtd > 0:
             competencia_texto = f"{LISTA_MESES[st.session_state['mes_num']-1]}/{st.session_state['ano_num']}"
             
-            # Salvamos os dados como tipos numéricos puros (float/int) para que a tabela aceite edição direta!
+            # Formato numérico limpo para permitir edição direta na tabela (Data Editor)
             novo_registro = {
                 "Competência": competencia_texto,
                 "Call Ref.": ticker_call if ticker_call else "-",
@@ -392,7 +450,7 @@ with c_btn1:
             
             st.session_state['historico_rolagens'].append(novo_registro)
             
-            # Calendário inteligente pula de forma automática sugerida para o mês seguinte
+            # Calendário avança dinamicamente
             if st.session_state['mes_num'] == 12:
                 st.session_state['mes_num'] = 1
                 st.session_state['ano_num'] += 1
@@ -415,27 +473,26 @@ if st.session_state['historico_rolagens']:
     st.markdown("---")
     st.subheader("📊 Relatório Cronológico de Amortização Patrimonial (Editável)")
     st.markdown(
-        "💡 **Opção de Correção:** Se você errou algum dado inserido anteriormente, pode dar um **duplo clique direto sobre qualquer célula** abaixo para corrigir o valor. "
-        "Caso deseje **deletar um mês inteiro**, clique no quadrado à esquerda da linha para selecioná-la e pressione a tecla `Delete` do seu teclado."
+        "💡 **Correções Rápidas:** Dê um **duplo clique sobre qualquer célula** abaixo se quiser alterar o valor. "
+        "Para **deletar um mês inteiro**, selecione a linha clicando na caixa à esquerda dela e aperte a tecla `Delete` do teclado."
     )
     
-    # Criamos o DataFrame temporário de renderização
     df_base = pd.DataFrame(st.session_state['historico_rolagens'])
     
-    # Injetamos o editor dinâmico na tela do cliente
+    # Renderização da tabela interativa com recálculo nativo estável
     df_corrigido = st.data_editor(
         df_base,
         use_container_width=True,
-        num_rows="dynamic", # Permite que o cliente delete linhas usando a tecla Delete
+        num_rows="dynamic",
         column_config={
-            "Competência": st.column_config.TextColumn("Competência", help="Mês e ano de referência da operação", required=True),
-            "Call Ref.": st.column_config.TextColumn("Call Ref.", help="Código do derivativo lançado"),
-            "Renda Opção Liq.": st.column_config.NumberColumn("Renda Opção Liq.", format="R$ %.2f", help="Prêmio líquido de custos e IR"),
-            "Dividendos/JSCP Liq.": st.column_config.NumberColumn("Dividendos/JSCP Liq.", format="R$ %.2f", help="Proventos líquidos que entraram em conta")
+            "Competência": st.column_config.TextColumn("Competência", help="Mês e ano de competência", required=True),
+            "Call Ref.": st.column_config.TextColumn("Call Ref.", help="Código da opção lançada"),
+            "Renda Opção Liq.": st.column_config.NumberColumn("Renda Opção Liq.", format="R$ %.2f"),
+            "Dividendos/JSCP Liq.": st.column_config.NumberColumn("Dividendos/JSCP Liq.", format="R$ %.2f")
         }
     )
     
-    # Se houver qualquer modificação ou deleção na tela por parte do cliente, a memória atualiza instantaneamente
+    # Se houver modificação estrutural na tabela, recarrega a aplicação atualizando os caixas dinamicamente
     if not df_corrigido.equals(df_base):
         st.session_state['historico_rolagens'] = df_corrigido.to_dict(orient="records")
         st.rerun()
