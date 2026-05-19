@@ -10,7 +10,7 @@ from supabase import create_client, Client
 # ==========================================
 st.set_page_config(page_title="Gouldian Invest", page_icon="🦅", layout="wide")
 
-# CSS oculto para remover assinaturas do Streamlit e garantir interface própria e limpa
+# CSS oculto para remover assinaturas do Streamlit e garantir interface própria
 REMOVER_BRANDING_CSS = """
     <style>
     #MainMenu {visibility: hidden;}
@@ -316,7 +316,8 @@ with tab1:
         premio_call = premio_call_raw if premio_call_raw is not None else 0.0
 
     volume_call = premio_call * qtd
-    receita_liquida_call_pre_ir = volume_call - (volume_call * emol_opcao) - (corretagem if corretagem > 0 else 0.0)
+    custos_atrito_call = (volume_call * emol_opcao) + (corretagem if corretagem > 0 else 0.0)
+    receita_liquida_call_pre_ir = volume_call - custos_atrito_call
     ir_isolado_call_po = receita_liquida_call_pre_ir * ir_opcoes
     receita_realmente_liquida_call = receita_liquida_call_pre_ir - ir_isolado_call_po
 
@@ -416,7 +417,6 @@ lucro_liquido_final = lucro_bruto_operacao - ir_devido_operacao
 
 rentabilidade_sobre_capital_inicial = (lucro_liquido_final / custo_base_bruto) * 100 if custo_base_bruto > 0 else 0.0
 
-# LÓGICA CORRIGIDA: Fase 3 projeta +1 mês pois simula o final do ciclo atual
 meses_projetados = len(st.session_state['historico_rolagens']) + 1
 if "Simples" in tipo_juros:
     meta_acumulada_projetada = meta_mensal * meses_projetados
@@ -430,35 +430,6 @@ c_res1.metric("Resultado Líquido Estimado", f"R$ {lucro_liquido_final:,.2f}")
 c_res2.metric("Yield on Cost (Retorno Global)", f"{rentabilidade_sobre_capital_inicial:.2f}%")
 c_res3.metric(f"Meta Balizada Selic Projetada", f"{meta_acumulada_projetada:.2f}%")
 
-total_entradas = receita_venda_ativo + receita_liquida_call_pre_ir + caixa_total_gerado + total_proventos_liquidos + receita_venda_put_residual
-total_saidas = volume_acao + volume_put + taxas_iniciais_totais + taxa_saida_b3 + corretagem_saida + ir_devido_operacao
-
-with st.expander("🔎 Ver Raio-X Detalhado do Simulado (DRE Completo)", expanded=False):
-    st.markdown(f"""
-    **1. Demonstração de Fluxo dos Derivativos:**
-    * **Seguro Longo ({ticker_put if ticker_put else 'Não informado'}):** {status_put}
-    * **Renda Curta ({ticker_call if ticker_call else 'Não informado'}):** {status_call}
-    
-    **2. Fluxo de Caixa (Entradas Realizadas + Projetadas):**
-    * (+) Valor de Liquidação/Mercado do Ativo: R$ {receita_venda_ativo:,.2f}
-    * (+) Prêmio Líquido Capturado na Call Atual (Pré-IR): R$ {receita_liquida_call_pre_ir:,.2f}
-    * (+) Proventos Líquidos Recebidos no Ciclo Atual: R$ {total_proventos_liquidos:,.2f}
-    * (+) Valor de Recuperação da Put Residual: R$ {receita_venda_put_residual:,.2f}
-    * (+) Caixa Histórico Líquido Acumulado (Calls + Proventos Passados): R$ {caixa_total_gerado:,.2f}
-    * **TOTAL DE ENTRADAS CAPTURADAS: R$ {total_entradas:,.2f}**
-    
-    **3. Fluxo de Caixa (Saídas e Custos Iniciais Imutáveis):**
-    * (-) Desembolso de Compra do Ativo Base: R$ {volume_acao:,.2f}
-    * (-) Desembolso de Compra da Put de Proteção: R$ {volume_put:,.2f}
-    * (-) Custos de Atrito Iniciais Totais (B3 + Corretagem): R$ {taxas_iniciais_totais:,.2f}
-    * (-) Taxas de Liquidação / Exercício de Saída B3: R$ {taxa_saida_b3:,.2f}
-    * (-) Custo de Corretagem de Saída: R$ {corretagem_saida:,.2f}
-    * (-) Guia de Imposto de Renda Estimada (DARF Operação): R$ {ir_devido_operacao:,.2f}
-    * **TOTAL DE SAÍDAS (Capital de Risco): R$ {total_saidas:,.2f}**
-    
-    **4. Lucro Líquido de Linha (Entradas - Saídas): R$ {lucro_liquido_final:,.2f}**
-    """)
-
 st.markdown("---")
 
 # ==========================================
@@ -471,11 +442,22 @@ with c_btn1:
     if st.button("➕ Consolidar Competência no Histórico de Tabelas", use_container_width=True):
         if qtd > 0:
             competencia_texto = f"{LISTA_MESES[st.session_state['mes_num']-1]}/{st.session_state['ano_num']}"
+            
+            # ATENÇÃO: Salvando todas as variáveis financeiras nas entrelinhas (Colunas Invisíveis começando com "_")
             novo_registro = {
                 "Competência": competencia_texto,
                 "Call Ref.": ticker_call if ticker_call else "-",
                 "Renda Opção Liq.": float(receita_realmente_liquida_call),
-                "Dividendos/JSCP Liq.": float(total_proventos_liquidos)
+                "Dividendos/JSCP Liq.": float(total_proventos_liquidos),
+                
+                # Payload Oculto para o Extrato Detalhado:
+                "_Strike Call": float(strike_call),
+                "_Premio Bruto Call": float(volume_call),
+                "_Custos B3 e Corretagem Call": float(custos_atrito_call),
+                "_DARF Retido Call": float(ir_isolado_call_po),
+                "_Dividendos Isentos": float(dividendos_brutos),
+                "_JSCP Bruto": float(jscp_bruto),
+                "_IR JSCP": float(ir_jscp)
             }
             st.session_state['historico_rolagens'].append(novo_registro)
             
@@ -533,12 +515,11 @@ with col_save2:
                 st.error(f"Erro ao salvar: {err}")
 
 # ==========================================
-# 5. TABELA DE AUDITORIA INTERATIVA
+# 5. TABELA DE AUDITORIA INTERATIVA E EXTRATO DETALHADO
 # ==========================================
 if st.session_state['historico_rolagens']:
     st.markdown("---")
-    st.subheader("📊 Relatório Cronológico de Amortização Patrimonial (Editável)")
-    st.markdown("💡 **Correções:** Dê um **duplo clique sobre qualquer célula** se quiser alterar o valor. Para **deletar um mês inteiro**, selecione a linha clicando na caixa à esquerda dela e aperte a tecla `Delete` do teclado.")
+    st.subheader("📊 Relatório Cronológico de Amortização Patrimonial")
     
     df_base = pd.DataFrame(st.session_state['historico_rolagens'])
     df_corrigido = st.data_editor(
@@ -549,7 +530,15 @@ if st.session_state['historico_rolagens']:
             "Competência": st.column_config.TextColumn("Competência", required=True),
             "Call Ref.": st.column_config.TextColumn("Call Ref."),
             "Renda Opção Liq.": st.column_config.NumberColumn("Renda Opção Liq.", format="R$ %.2f"),
-            "Dividendos/JSCP Liq.": st.column_config.NumberColumn("Dividendos/JSCP Liq.", format="R$ %.2f")
+            "Dividendos/JSCP Liq.": st.column_config.NumberColumn("Dividendos/JSCP Liq.", format="R$ %.2f"),
+            # Ocultando as colunas de dados profundos da visualização da tabela
+            "_Strike Call": None,
+            "_Premio Bruto Call": None,
+            "_Custos B3 e Corretagem Call": None,
+            "_DARF Retido Call": None,
+            "_Dividendos Isentos": None,
+            "_JSCP Bruto": None,
+            "_IR JSCP": None
         }
     )
     
@@ -557,12 +546,59 @@ if st.session_state['historico_rolagens']:
         st.session_state['historico_rolagens'] = df_corrigido.to_dict(orient="records")
         st.rerun()
 
+    # --- NOVO: MÓDULO DE DRILL-DOWN (EXTRATO MENSAL DETALHADO) ---
+    st.write("")
+    st.subheader("🧾 Extrato Mensal Detalhado")
+    st.markdown("Selecione um mês consolidado acima para auditar todas as receitas, custos operacionais e impostos gerados naquela competência.")
+    
+    meses_consolidados_lista = [r["Competência"] for r in st.session_state['historico_rolagens']]
+    
+    if meses_consolidados_lista:
+        mes_extrato = st.selectbox("Selecione o Mês para Auditoria:", meses_consolidados_lista)
+        dados_mes = next((item for item in st.session_state['historico_rolagens'] if item["Competência"] == mes_extrato), None)
+        
+        if dados_mes:
+            # Fallback seguro caso o cliente acesse dados antigos que não tinham essas colunas ocultas salvas
+            stk_call = dados_mes.get('_Strike Call', 0.0)
+            prm_bruto = dados_mes.get('_Premio Bruto Call', 0.0)
+            cst_b3_cor = dados_mes.get('_Custos B3 e Corretagem Call', 0.0)
+            ir_call = dados_mes.get('_DARF Retido Call', 0.0)
+            divs = dados_mes.get('_Dividendos Isentos', 0.0)
+            jscp_brt = dados_mes.get('_JSCP Bruto', 0.0)
+            ir_jscp_val = dados_mes.get('_IR JSCP', 0.0)
+            
+            c_ext1, c_ext2, c_ext3 = st.columns(3)
+            with c_ext1:
+                st.markdown("**📊 Operação de Opções (Derivativos)**")
+                st.write(f"Código Call: **{dados_mes.get('Call Ref.', '-')}**")
+                st.write(f"Strike Call: R$ {stk_call:.2f}")
+                st.write(f"Prêmio Bruto: R$ {prm_bruto:,.2f}")
+                st.write(f"Custos/Corretagem: R$ -{cst_b3_cor:,.2f}")
+                st.write(f"DARF a Pagar (IR): R$ -{ir_call:,.2f}")
+                st.info(f"**Líquido Opção:** R$ {dados_mes.get('Renda Opção Liq.', 0.0):,.2f}")
+                
+            with c_ext2:
+                st.markdown("**💰 Eventos Corporativos (Proventos)**")
+                st.write(f"Dividendos Isentos: R$ {divs:,.2f}")
+                st.write(f"JSCP Bruto Declarado: R$ {jscp_brt:,.2f}")
+                st.write(f"IR Retido na Fonte (JSCP): R$ -{ir_jscp_val:,.2f}")
+                st.info(f"**Líquido Proventos:** R$ {dados_mes.get('Dividendos/JSCP Liq.', 0.0):,.2f}")
+                
+            with c_ext3:
+                st.markdown("**🧾 Fechamento Consolidado do Mês**")
+                caixa_bruto_total = prm_bruto + divs + jscp_brt
+                total_retencoes = cst_b3_cor + ir_call + ir_jscp_val
+                caixa_liquido_total = caixa_bruto_total - total_retencoes
+                
+                st.write(f"Total Bruto Capturado: R$ {caixa_bruto_total:,.2f}")
+                st.write(f"Total Custos e Tributos: R$ -{total_retencoes:,.2f}")
+                st.success(f"**Caixa Real Gerado:** R$ {caixa_liquido_total:,.2f}")
+
 # ==========================================
-# 6. PAINEL COMPARATIVO DE PERFORMANCE E TRIBUTAÇÃO (CORRIGIDO)
+# 6. PAINEL COMPARATIVO DE PERFORMANCE E TRIBUTAÇÃO
 # ==========================================
 st.markdown("---")
 st.subheader("🏆 Painel Comparativo de Performance Absoluta")
-st.markdown("Análise da geração de caixa consolidada, Alpha de mercado e Provisões de DARF do mês ativo.")
 
 @st.cache_data(ttl=3600)
 def buscar_indicadores_mercado():
@@ -578,8 +614,6 @@ def buscar_indicadores_mercado():
 perf_ibov, perf_usd = buscar_indicadores_mercado()
 retorno_caixa_puro = (caixa_total_gerado / custo_base_bruto) * 100 if custo_base_bruto > 0 else 0.0
 
-# LÓGICA CORRIGIDA: Fase 6 avalia a Selic apenas dos meses já consolidados na tabela. 
-# Evita descasamento de prazo e falsos Alphas negativos.
 meses_consolidados = len(st.session_state['historico_rolagens'])
 if meses_consolidados == 0:
     meta_acumulada_realizada = 0.0
