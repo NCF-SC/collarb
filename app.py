@@ -10,7 +10,7 @@ from supabase import create_client, Client
 # ==========================================
 st.set_page_config(page_title="Gouldian Invest", page_icon="🦅", layout="wide")
 
-# CSS oculto para remover assinaturas visuais do Streamlit e garantir identidade própria
+# CSS oculto para remover assinaturas do Streamlit e garantir interface própria e limpa
 REMOVER_BRANDING_CSS = """
     <style>
     #MainMenu {visibility: hidden;}
@@ -40,23 +40,51 @@ def hash_senha(senha):
     return hashlib.sha256(senha.encode()).hexdigest()
 
 # ==========================================
-# 1. INICIALIZAÇÃO DA MEMÓRIA DO SISTEMA
+# FUNCTIONS DE GERENCIAMENTO DE ESTADOS (VIRGEM VS LOAD)
+# ==========================================
+def inicializar_estrategia_vazia():
+    st.session_state['nome_estrategia_atual'] = ""
+    st.session_state['historico_rolagens'] = []
+    st.session_state['mes_num'] = datetime.date.today().month
+    st.session_state['ano_num'] = datetime.date.today().year
+    st.session_state['val_preco_acao'] = None
+    st.session_state['val_qtd'] = None
+    st.session_state['val_ticker_put'] = ""
+    st.session_state['val_preco_put'] = None
+    st.session_state['val_strike_put'] = None
+    st.session_state['val_ticker_call'] = ""
+    st.session_state['val_strike_call'] = None
+    st.session_state['val_premio_call'] = None
+    st.session_state['val_dividendos'] = None
+    st.session_state['val_jscp'] = None
+
+def carregar_estrategia_salva(nome, pkg):
+    st.session_state['nome_estrategia_atual'] = nome
+    st.session_state['historico_rolagens'] = pkg.get('historico_rolagens', [])
+    st.session_state['mes_num'] = pkg.get('mes_num', datetime.date.today().month)
+    st.session_state['ano_num'] = pkg.get('ano_num', datetime.date.today().year)
+    st.session_state['val_preco_acao'] = pkg.get('preco_acao', None)
+    st.session_state['val_qtd'] = pkg.get('qtd', None)
+    st.session_state['val_ticker_put'] = pkg.get('ticker_put', "")
+    st.session_state['val_preco_put'] = pkg.get('preco_put', None)
+    st.session_state['val_strike_put'] = pkg.get('strike_put', None)
+    st.session_state['val_ticker_call'] = pkg.get('ticker_call', "")
+    st.session_state['val_strike_call'] = pkg.get('strike_call', None)
+    st.session_state['val_premio_call'] = pkg.get('premio_call', None)
+    st.session_state['val_dividendos'] = pkg.get('dividendos', None)
+    st.session_state['val_jscp'] = pkg.get('jscp', None)
+
+# ==========================================
+# 1. CONTROLE DE AMBIENTE E LOGIN DE SESSÃO
 # ==========================================
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
 if 'username' not in st.session_state:
     st.session_state['username'] = ""
-
-def zerar_dados_financeiros():
-    st.session_state['historico_rolagens'] = []
-    st.session_state['mes_num'] = datetime.date.today().month
-    st.session_state['ano_num'] = datetime.date.today().year
+if 'preco_acao_tela' not in st.session_state:
     st.session_state['preco_acao_tela'] = 0.0
 
-if 'historico_rolagens' not in st.session_state:
-    zerar_dados_financeiros()
-
-# PERSISTÊNCIA AUTOMÁTICA DE LOGIN (Previne deslogar no F5/Refresh)
+# PERSISTÊNCIA DE LOGIN (Evita deslogar no F5/Refresh)
 if "session_token" in st.query_params and not st.session_state['logged_in']:
     token_email = st.query_params["session_token"]
     try:
@@ -65,17 +93,17 @@ if "session_token" in st.query_params and not st.session_state['logged_in']:
             user_db = resposta_auto.data[0]
             st.session_state['logged_in'] = True
             st.session_state['username'] = token_email.split('@')[0].capitalize()
-            dados_salvos = user_db.get("dados", {})
-            if dados_salvos:
-                st.session_state['historico_rolagens'] = dados_salvos.get('historico_rolagens', [])
-                st.session_state['mes_num'] = dados_salvos.get('mes_num', datetime.date.today().month)
-                st.session_state['ano_num'] = dados_salvos.get('ano_num', datetime.date.today().year)
+            st.session_state['user_email_completo'] = token_email
+            st.session_state['dados_nuvem'] = user_db.get("dados", {})
+            if "estrategias" not in st.session_state['dados_nuvem']:
+                st.session_state['dados_nuvem']["estrategias"] = {}
+            
+            # IMPOSIÇÃO: Sempre inicia 100% virgem no login/refresh
+            st.session_state['projeto_index'] = 0
+            inicializar_estrategia_vazia()
     except:
         pass
 
-# ==========================================
-# 2. SISTEMA DE ACESSO (LOGIN / CADASTRO)
-# ==========================================
 if not st.session_state['logged_in']:
     st.title("🦅 Gouldian Invest")
     st.markdown("Plataforma Quantitativa de Engenharia Financeira de Derivativos.")
@@ -99,13 +127,16 @@ if not st.session_state['logged_in']:
                             if user_db["senha"] == senha_criptografada:
                                 st.session_state['logged_in'] = True
                                 st.session_state['username'] = email_input.split('@')[0].capitalize()
+                                st.session_state['user_email_completo'] = email_input
                                 st.query_params["session_token"] = email_input
                                 
-                                dados_salvos = user_db.get("dados", {})
-                                if dados_salvos:
-                                    st.session_state['historico_rolagens'] = dados_salvos.get('historico_rolagens', [])
-                                    st.session_state['mes_num'] = dados_salvos.get('mes_num', datetime.date.today().month)
-                                    st.session_state['ano_num'] = dados_salvos.get('ano_num', datetime.date.today().year)
+                                st.session_state['dados_nuvem'] = user_db.get("dados", {})
+                                if "estrategias" not in st.session_state['dados_nuvem']:
+                                    st.session_state['dados_nuvem']["estrategias"] = {}
+                                
+                                # IMPOSIÇÃO: Inicia completamente virgem ao logar
+                                st.session_state['projeto_index'] = 0
+                                inicializar_estrategia_vazia()
                                 st.rerun()
                             else:
                                 st.error("Senha incorreta.")
@@ -126,7 +157,7 @@ if not st.session_state['logged_in']:
                             novo_user = {
                                 "email": email_input,
                                 "senha": hash_senha(senha_input),
-                                "dados": {}
+                                "dados": {"estrategias": {}}
                             }
                             supabase.table("usuarios").insert(novo_user).execute()
                             st.success("Conta criada! Alterne para 'Login' para entrar.")
@@ -135,43 +166,34 @@ if not st.session_state['logged_in']:
     st.stop()
 
 # ==========================================
-# 3. AMBIENTE LOGADO PRINCIPAL
+# 2. SEÇÃO DE PERFIL E GERENCIAMENTO DE PROJETOS (LOADER)
 # ==========================================
 st.title("Gouldian Invest | Gestão de Collar Dinâmico")
+st.write(f"Sessão Ativa: **{st.session_state['username']}** | Conexão Segura 🛡️")
 
-col_user1, col_user2, col_user3 = st.columns([3, 1, 1])
-nome_exibicao = st.session_state['username']
-col_user1.write(f"Sessão Ativa: **{nome_exibicao}** | Conexão Segura e Criptografada 🛡️")
-
-if col_user2.button("💾 Salvar Dados na Nuvem", type="primary", use_container_width=True):
-    dados_para_nuvem = {
-        "historico_rolagens": st.session_state['historico_rolagens'],
-        "mes_num": st.session_state['mes_num'],
-        "ano_num": st.session_state['ano_num']
-    }
-    try:
-        resposta_email = supabase.table("usuarios").select("email").execute()
-        for u in resposta_email.data:
-            if u["email"].startswith(st.session_state['username'].lower()):
-                supabase.table("usuarios").update({"dados": dados_para_nuvem}).eq("email", u["email"]).execute()
-                st.success("Estudo sincronizado com sucesso!")
-                break
-    except Exception as err:
-        st.error(f"Falha ao salvar dados: {err}")
-
-if col_user3.button("Sair do Sistema", use_container_width=True):
-    st.session_state['logged_in'] = False
-    st.query_params.clear()
-    zerar_dados_financeiros()
-    st.rerun()
-
-# AVISO OBRIGATÓRIO DE SALVAMENTO SOLICITADO
-st.info("⚠️ **Nota de Retenção de Dados:** Sempre que realizar alterações na tabela interativa, consolidar meses ou incluir proventos, lembre-se de clicar no botão **'💾 Salvar Dados na Nuvem'** no topo da tela para registrar suas modificações permanentemente.")
+with st.expander("👤 Meu Perfil & Estratégias Salvas", expanded=True):
+    dict_estrategias = st.session_state['dados_nuvem'].get("estrategias", {})
+    opcoes_projeto = ["-- Criar Nova Estratégia (Tela Limpa) --"] + list(dict_estrategias.keys())
+    
+    if 'projeto_index' not in st.session_state:
+        st.session_state['projeto_index'] = 0
+        
+    projeto_escolhido = st.selectbox("📁 Selecionar Estratégia Cadastrada no Perfil:", opcoes_projeto, index=st.session_state['projeto_index'])
+    
+    # Detecção de troca de projeto por clique do usuário
+    if 'ultimo_projeto_escolhido' not in st.session_state or st.session_state['ultimo_projeto_escolhido'] != projeto_escolhido:
+        st.session_state['ultimo_projeto_escolhido'] = projeto_escolhido
+        st.session_state['projeto_index'] = opcoes_projeto.index(projeto_escolhido)
+        if projeto_escolhido == "-- Criar Nova Estratégia (Tela Limpa) --":
+            inicializar_estrategia_vazia()
+        else:
+            carregar_estrategia_salva(projeto_escolhido, dict_estrategias[projeto_escolhido])
+        st.rerun()
 
 st.markdown("---")
 
 # ==========================================
-# RECALCULO DINÂMICO DOS ACUMULADOS DOS HISTÓRICOS
+# RECALCULO DINÂMICO DOS ACUMULADOS BASEADO NO HISTÓRICO ATIVO
 # ==========================================
 caixa_acumulado_calls = 0.0
 caixa_proventos = 0.0
@@ -184,7 +206,7 @@ if st.session_state['historico_rolagens']:
 caixa_total_gerado = caixa_acumulado_calls + caixa_proventos
 
 # ==========================================
-# 4. BARRA LATERAL (MONITOR E BENCHMARK)
+# 3. BARRA LATERAL (MONITOR E BENCHMARK)
 # ==========================================
 st.sidebar.header("🔍 Monitor de Mercado")
 ticker_acao = st.sidebar.text_input("Ticker do Ativo", value="", placeholder="Ex: PETR4.SA")
@@ -208,7 +230,7 @@ with st.sidebar.expander("⚙️ Custos Operacionais e IR", expanded=False):
     corretagem = st.number_input("Corretagem Fixa (R$)", value=0.00, step=1.0)
     taxa_ex_b3 = st.number_input("Taxa Exercício B3 (%)", value=0.5, step=0.1) / 100
 
-with st.sidebar.expander("🏦 Benchmark Selic", expanded=True):
+with st.sidebar.expander("🏦 Benchmark Selic", expanded=False):
     juros_bruto_aa = st.number_input("Selic Bruta (% a.a.)", value=14.50, step=0.1) / 100
     ir_renda_fixa = st.number_input("IR Renda Fixa (%)", value=22.5, step=0.5) / 100
     juros_liquido_aa = juros_bruto_aa * (1 - ir_renda_fixa)
@@ -220,7 +242,7 @@ with st.sidebar.expander("🏦 Benchmark Selic", expanded=True):
     meta_mensal = juros_liquido_am * 100
 
 # ==========================================
-# FASE 1: PARAMETRIZAÇÃO DAS ENTRADAS LÓGICAS (TAB-OPTIMIZED)
+# FASE 1: MONTAGEM DO MODELO (TAB-OPTIMIZED FLOW)
 # ==========================================
 st.header("📦 Fase 1: Parâmetros e Alvos da Operação")
 
@@ -235,20 +257,20 @@ with col_cron2:
 st.write("")
 col1, col2, col3 = st.columns(3)
 
-# REORGANIZAÇÃO COMPLETA DE CAMPOS: O TAB flui estritamente pelas caixas de texto/número de forma linear
+# O TAB flui de maneira nativa e ininterrupta da esquerda para a direita através da remoção de botões internos
 with col1:
     st.subheader("1. Ativo Base")
-    preco_acao_raw = st.number_input("Preço de Compra da Ação (R$)", value=None, placeholder="Digite o preço...", format="%.2f")
-    qtd_raw = st.number_input("Quantidade de Ações", value=None, placeholder="Ex: 1000", step=100)
+    preco_acao_raw = st.number_input("Preço de Compra da Ação (R$)", value=st.session_state['val_preco_acao'], placeholder="Digite o preço...", format="%.2f")
+    qtd_raw = st.number_input("Quantidade de Ações", value=st.session_state['val_qtd'], placeholder="Ex: 1000", step=100)
     
     preco_acao = preco_acao_raw if preco_acao_raw is not None else 0.0
     qtd = qtd_raw if qtd_raw is not None else 0
 
 with col2:
     st.subheader("2. Seguro Longo (Put)")
-    ticker_put = st.text_input("Código da Put", value="", placeholder="Ex: PETRR454")
-    preco_put_raw = st.number_input("Prêmio Pago na Put (R$)", value=None, placeholder="Ex: 3.43", format="%.2f")
-    strike_put_raw = st.number_input("Strike da Put (R$)", value=None, placeholder="Ex: 49.46", format="%.2f")
+    ticker_put = st.text_input("Código da Put", value=st.session_state['val_ticker_put'], placeholder="Ex: PETRR454")
+    preco_put_raw = st.number_input("Prêmio Pago na Put (R$)", value=st.session_state['val_preco_put'], placeholder="Ex: 3.43", format="%.2f")
+    strike_put_raw = st.number_input("Strike da Put (R$)", value=st.session_state['val_strike_put'], placeholder="Ex: 49.46", format="%.2f")
     
     preco_put = preco_put_raw if preco_put_raw is not None else 0.0
     strike_put = strike_put_raw if strike_put_raw is not None else 0.0
@@ -282,7 +304,7 @@ with col3:
 st.markdown("---")
 
 # ==========================================
-# FASE 2: DISTRIBUIÇÃO MENSAL
+# FASE 2: REMUNERAÇÃO DE CAIXA MENSAL
 # ==========================================
 st.header("⚡ Fase 2: Distribuição de Caixa Mensal")
 tab1, tab2 = st.tabs(["Lançamento de Call Mensal", "Proventos Recebidos"])
@@ -290,9 +312,9 @@ tab1, tab2 = st.tabs(["Lançamento de Call Mensal", "Proventos Recebidos"])
 with tab1:
     col4, col5 = st.columns([1, 2])
     with col4:
-        ticker_call = st.text_input("Código da Call Curta", value="", placeholder="Ex: PETRF54")
-        strike_call_raw = st.number_input("Strike da Call Lançada (R$)", value=None, placeholder="Ex: 54.19", format="%.2f")
-        premio_call_raw = st.number_input("Prêmio Bruto Recebido (R$)", value=None, placeholder="Ex: 0.25", format="%.2f")
+        ticker_call = st.text_input("Código da Call Curta", value=st.session_state['val_ticker_call'], placeholder="Ex: PETRF54")
+        strike_call_raw = st.number_input("Strike da Call Lançada (R$)", value=st.session_state['val_strike_call'], placeholder="Ex: 54.19", format="%.2f")
+        premio_call_raw = st.number_input("Prêmio Bruto Recebido (R$)", value=st.session_state['val_premio_call'], placeholder="Ex: 0.25", format="%.2f")
         
         strike_call = strike_call_raw if strike_call_raw is not None else 0.0
         premio_call = premio_call_raw if premio_call_raw is not None else 0.0
@@ -312,10 +334,10 @@ with tab1:
 with tab2:
     c_prov1, c_prov2, c_prov3 = st.columns(3)
     with c_prov1:
-        div_brutos_raw = st.number_input("Dividendos Recebidos (Isentos R$)", value=None, placeholder="0.00", format="%.2f")
+        div_brutos_raw = st.number_input("Dividendos Recebidos (Isentos R$)", value=st.session_state['val_dividendos'], placeholder="0.00", format="%.2f")
         dividendos_brutos = div_brutos_raw if div_brutos_raw is not None else 0.0
     with c_prov2:
-        jscp_brutos_raw = st.number_input("JSCP Bruto Recebido (R$)", value=None, placeholder="0.00", format="%.2f")
+        jscp_brutos_raw = st.number_input("JSCP Bruto Recebido (R$)", value=st.session_state['val_jscp'], placeholder="0.00", format="%.2f")
         jscp_bruto = jscp_brutos_raw if jscp_brutos_raw is not None else 0.0
     
     ir_jscp = jscp_bruto * ir_jscp_tax
@@ -328,13 +350,12 @@ with tab2:
 st.markdown("---")
 
 # ==========================================
-# FASE 3: SIMULADOR DE PAYOFF E DRE
+# FASE 3: SIMULADOR DE PAYOFF COMPLETO e DRE
 # ==========================================
 st.header("🔮 Fase 3: Simulador Patrimonial de Payoff")
 
 max_slider = float(preco_acao * 2.0) if preco_acao > 0 else 100.0
 
-# Vínculo da chave 'key' nativa elimina por completo o duplo clique/atraso do slider
 preco_vencimento = st.slider(
     "Preço Estimado do Ativo no Vencimento (R$)", 
     min_value=0.0, 
@@ -433,14 +454,18 @@ with st.expander("🔎 Ver Raio-X Detalhado do Simulado (DRE Completo)", expande
     **4. Lucro Líquido de Linha (Entradas - Saídas): R$ {lucro_liquido_final:,.2f}**
     """)
 
-st.write("")
-c_btn1, c_btn2 = st.columns(2)
+st.markdown("---")
 
+# ==========================================
+# FASE 4: CONSOLIDAR OU NOMEAR E SALVAR PROJETO (IMPOSIÇÃO DE NOME)
+# ==========================================
+st.header("⏳ Fase 4: Consolidação e Retenção em Nuvem")
+
+c_btn1, c_btn2 = st.columns(2)
 with c_btn1:
-    if st.button("➕ Consolidar Competência no Histórico", use_container_width=True):
+    if st.button("➕ Consolidar Competência no Histórico de Tabelas", use_container_width=True):
         if qtd > 0:
             competencia_texto = f"{LISTA_MESES[st.session_state['mes_num']-1]}/{st.session_state['ano_num']}"
-            
             novo_registro = {
                 "Competência": competencia_texto,
                 "Call Ref.": ticker_call if ticker_call else "-",
@@ -454,15 +479,57 @@ with c_btn1:
                 st.session_state['ano_num'] += 1
             else:
                 st.session_state['mes_num'] += 1
-                
             st.rerun()
         else:
             st.error("Insira o preço e a quantidade do Ativo Base para registrar dados.")
 
 with c_btn2:
-    if st.button("🛑 Limpar Todo o Histórico", type="primary", use_container_width=True):
-        zerar_dados_financeiros()
+    if st.button("🛑 Limpar Estudo Atual da Tela", type="primary", use_container_width=True):
+        inicializar_estrategia_vazia()
         st.rerun()
+
+st.write("")
+
+# INPUT DESIGNADO PARA IMPOSIÇÃO DE SALVAMENTO COM NOME OBRIGATÓRIO
+col_save1, col_save2 = st.columns([3, 1])
+with col_save1:
+    nome_projeto_salvar = st.text_input("Identificador/Nome Obrigatório para Gravar esta Estratégia", value=st.session_state['nome_estrategia_atual'], placeholder="Ex: PETR4 Collar Conservador 2026")
+with col_save2:
+    st.write("")
+    st.write("")
+    if st.button("💾 Gravar Estudo no Perfil", type="primary", use_container_width=True):
+        if not nome_projeto_salvar.strip():
+            st.error("❌ Bloqueado: Você deve preencher obrigatoriamente um nome para a estratégia antes de salvar!")
+        else:
+            # Empacota todo o estado atual e as configurações inseridas para o Loader abrir depois
+            dados_estrategia_atual = {
+                "preco_acao": preco_acao if preco_acao > 0 else None,
+                "qtd": qtd if qtd > 0 else None,
+                "ticker_put": ticker_put,
+                "preco_put": preco_put if preco_put > 0 else None,
+                "strike_put": strike_put if strike_put > 0 else None,
+                "ticker_call": ticker_call,
+                "strike_call": strike_call if strike_call > 0 else None,
+                "premio_call": premio_call if premio_call > 0 else None,
+                "dividendos": dividendos_brutos if dividendos_brutos > 0 else None,
+                "jscp": jscp_bruto if jscp_bruto > 0 else None,
+                "historico_rolagens": st.session_state['historico_rolagens'],
+                "mes_num": st.session_state['mes_num'],
+                "ano_num": st.session_state['ano_num']
+            }
+            
+            st.session_state['dados_nuvem']["estrategias"][nome_projeto_salvar.strip()] = dados_estrategia_atual
+            st.session_state['nome_estrategia_atual'] = nome_projeto_salvar.strip()
+            
+            try:
+                supabase.table("usuarios").update({"dados": st.session_state['dados_nuvem']}).eq("email", st.session_state['user_email_completo']).execute()
+                st.success(f"🎉 Sucesso: Estratégia '{nome_projeto_salvar.strip()}' foi arquivada e sincronizada!")
+                
+                # Seta o index do combo de perfil para a recém criada
+                st.session_state['projeto_index'] = list(st.session_state['dados_nuvem']["estrategias"].keys()).index(nome_projeto_salvar.strip()) + 1
+                st.rerun()
+            except Exception as err:
+                st.error(f"Erro ao salvar: {err}")
 
 # ==========================================
 # 5. TABELA DE AUDITORIA INTERATIVA (SISTEMA DE CORREÇÃO DE ERROS)
@@ -470,13 +537,9 @@ with c_btn2:
 if st.session_state['historico_rolagens']:
     st.markdown("---")
     st.subheader("📊 Relatório Cronológico de Amortização Patrimonial (Editável)")
-    st.markdown(
-        "💡 **Correções Rápidas:** Dê um **duplo clique sobre qualquer célula** abaixo se quiser alterar o valor. "
-        "Para **deletar um mês inteiro**, selecione a linha clicando na caixa à esquerda dela e aperte a tecla `Delete` do teclado."
-    )
+    st.markdown("💡 **Correções:** Dê um **duplo clique sobre qualquer célula** se quiser alterar o valor. Para **deletar um mês inteiro**, selecione a linha clicando na caixa à esquerda dela e aperte a tecla `Delete` do teclado.")
     
     df_base = pd.DataFrame(st.session_state['historico_rolagens'])
-    
     df_corrigido = st.data_editor(
         df_base,
         use_container_width=True,
@@ -494,36 +557,30 @@ if st.session_state['historico_rolagens']:
         st.rerun()
 
 # ==========================================
-# 6. PAINEL COMPARATIVO DE PERFORMANCE MULTI-INDICADORES
+# 6. PAINEL COMPARATIVO DE PERFORMANCE MULTI-INDICADORES GLOBAIS
 # ==========================================
 st.markdown("---")
 st.subheader("🏆 Painel Comparativo de Performance Absoluta")
-st.markdown("Análise de prêmio e geração de caixa acumulados vs Benchmarks de Mercado Globais no período.")
+st.markdown("Análise de prêmio e geração de caixa acumulados da estratégia vs Benchmarks de Mercado Globais no mesmo período.")
 
-# Coleta dinâmica de indicadores do mercado usando yfinance
 @st.cache_data(ttl=3600)
 def buscar_indicadores_mercado():
     try:
         # ^BVSP = Ibovespa | USDBRL=X = Dólar Comercial
         tickers = ["^BVSP", "USDBRL=X"]
         dados_mkt = yf.download(tickers, period="1mo")['Close']
-        
-        # Pega a variação percentual aproximada recente (mês) para ilustração comparativa institucional
         ret_ibov = ((dados_mkt["^BVSP"].iloc[-1] / dados_mkt["^BVSP"].iloc[0]) - 1) * 100
         ret_usd = ((dados_mkt["USDBRL=X"].iloc[-1] / dados_mkt["USDBRL=X"].iloc[0]) - 1) * 100
         return ret_ibov, ret_usd
     except:
-        return 1.25, -0.45 # Fallbacks estáveis caso a API de fim de semana apresente instabilidade
+        return 1.25, -0.45 
 
 perf_ibov, perf_usd = buscar_indicadores_mercado()
-
-# Calcula o retorno real acumulado gerado de caixa puro em carteira
 retorno_caixa_puro = (caixa_total_gerado / custo_base_bruto) * 100 if custo_base_bruto > 0 else 0.0
 
 c_perf1, c_perf2, c_perf3, c_perf4 = st.columns(4)
-
 c_perf1.metric(
-    label="Estratégia Gouldian (Caixa Criado)", 
+    label="Estratégia Gouldian (Caixa Gerado)", 
     value=f"{retorno_caixa_puro:.2f}%", 
     delta=f"R$ {caixa_total_gerado:,.2f}"
 )
@@ -534,12 +591,12 @@ c_perf2.metric(
     delta_color="inverse"
 )
 c_perf3.metric(
-    label="Ibovespa de Referência (1M)", 
+    label="Ibovespa de Referência (Ações)", 
     value=f"{perf_ibov:.2f}%", 
-    delta="Mercado de Ações"
+    delta="Retorno de Mercado"
 )
 c_perf4.metric(
-    label="Câmbio Dólar (USD/BRL 1M)", 
+    label="Câmbio Dólar (USD/BRL)", 
     value=f"{perf_usd:.2f}%", 
-    delta="Proteção Cambial"
+    delta="Benchmark Cambial"
 )
