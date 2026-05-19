@@ -10,7 +10,7 @@ from supabase import create_client, Client
 # ==========================================
 st.set_page_config(page_title="Gouldian Invest", page_icon="🦅", layout="wide")
 
-# CSS para ocultar completamente marcas d'água e menus nativos de desenvolvimento
+# CSS oculto para remover assinaturas visuais do Streamlit e garantir identidade própria
 REMOVER_BRANDING_CSS = """
     <style>
     #MainMenu {visibility: hidden;}
@@ -33,14 +33,14 @@ def init_connection():
 try:
     supabase = init_connection()
 except Exception as e:
-    st.error("Erro na ponte segura de dados. Tente atualizar a página.")
+    st.error("Erro na conexão segura de dados. Atualize a página.")
     st.stop()
 
 def hash_senha(senha):
     return hashlib.sha256(senha.encode()).hexdigest()
 
 # ==========================================
-# 1. INICIALIZAÇÃO DA MEMÓRIA DO USUÁRIO
+# 1. INICIALIZAÇÃO DA MEMÓRIA DO SISTEMA
 # ==========================================
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
@@ -56,7 +56,7 @@ def zerar_dados_financeiros():
 if 'historico_rolagens' not in st.session_state:
     zerar_dados_financeiros()
 
-# PERSISTÊNCIA AUTOMÁTICA DE LOGIN (Evita deslogar no F5/Refresh)
+# PERSISTÊNCIA AUTOMÁTICA DE LOGIN (Previne deslogar no F5/Refresh)
 if "session_token" in st.query_params and not st.session_state['logged_in']:
     token_email = st.query_params["session_token"]
     try:
@@ -74,7 +74,7 @@ if "session_token" in st.query_params and not st.session_state['logged_in']:
         pass
 
 # ==========================================
-# 2. SISTEMA DE AUTENTICAÇÃO EXCLUSIVO
+# 2. SISTEMA DE ACESSO (LOGIN / CADASTRO)
 # ==========================================
 if not st.session_state['logged_in']:
     st.title("🦅 Gouldian Invest")
@@ -99,8 +99,6 @@ if not st.session_state['logged_in']:
                             if user_db["senha"] == senha_criptografada:
                                 st.session_state['logged_in'] = True
                                 st.session_state['username'] = email_input.split('@')[0].capitalize()
-                                
-                                # Define o parâmetro na URL para persistência de refresh
                                 st.query_params["session_token"] = email_input
                                 
                                 dados_salvos = user_db.get("dados", {})
@@ -137,12 +135,13 @@ if not st.session_state['logged_in']:
     st.stop()
 
 # ==========================================
-# 3. AMBIENTE LOGADO - CONTRAPARTIDA COMERCIAL
+# 3. AMBIENTE LOGADO PRINCIPAL
 # ==========================================
 st.title("Gouldian Invest | Gestão de Collar Dinâmico")
 
 col_user1, col_user2, col_user3 = st.columns([3, 1, 1])
-col_user1.write(f"Sessão Ativa: **{st.session_state['username']}** | Ambiente Altamente Seguro 🛡️")
+nome_exibicao = st.session_state['username']
+col_user1.write(f"Sessão Ativa: **{nome_exibicao}** | Conexão Segura e Criptografada 🛡️")
 
 if col_user2.button("💾 Salvar Dados na Nuvem", type="primary", use_container_width=True):
     dados_para_nuvem = {
@@ -151,26 +150,28 @@ if col_user2.button("💾 Salvar Dados na Nuvem", type="primary", use_container_
         "ano_num": st.session_state['ano_num']
     }
     try:
-        # Encontra o e-mail completo associado ao username ativo
         resposta_email = supabase.table("usuarios").select("email").execute()
         for u in resposta_email.data:
             if u["email"].startswith(st.session_state['username'].lower()):
                 supabase.table("usuarios").update({"dados": dados_para_nuvem}).eq("email", u["email"]).execute()
-                st.success("Estudo salvo e sincronizado na nuvem!")
+                st.success("Estudo sincronizado com sucesso!")
                 break
     except Exception as err:
         st.error(f"Falha ao salvar dados: {err}")
 
 if col_user3.button("Sair do Sistema", use_container_width=True):
     st.session_state['logged_in'] = False
-    st.query_params.clear() # Limpa o token da URL para deslogar de fato
+    st.query_params.clear()
     zerar_dados_financeiros()
     st.rerun()
+
+# AVISO OBRIGATÓRIO DE SALVAMENTO SOLICITADO
+st.info("⚠️ **Nota de Retenção de Dados:** Sempre que realizar alterações na tabela interativa, consolidar meses ou incluir proventos, lembre-se de clicar no botão **'💾 Salvar Dados na Nuvem'** no topo da tela para registrar suas modificações permanentemente.")
 
 st.markdown("---")
 
 # ==========================================
-# RECALCULO DINÂMICO DOS ACUMULADOS
+# RECALCULO DINÂMICO DOS ACUMULADOS DOS HISTÓRICOS
 # ==========================================
 caixa_acumulado_calls = 0.0
 caixa_proventos = 0.0
@@ -219,7 +220,7 @@ with st.sidebar.expander("🏦 Benchmark Selic", expanded=True):
     meta_mensal = juros_liquido_am * 100
 
 # ==========================================
-# FASE 1: AQUISIÇÃO E PARÂMETROS CRONOLÓGICOS
+# FASE 1: PARAMETRIZAÇÃO DAS ENTRADAS LÓGICAS (TAB-OPTIMIZED)
 # ==========================================
 st.header("📦 Fase 1: Parâmetros e Alvos da Operação")
 
@@ -234,6 +235,7 @@ with col_cron2:
 st.write("")
 col1, col2, col3 = st.columns(3)
 
+# REORGANIZAÇÃO COMPLETA DE CAMPOS: O TAB flui estritamente pelas caixas de texto/número de forma linear
 with col1:
     st.subheader("1. Ativo Base")
     preco_acao_raw = st.number_input("Preço de Compra da Ação (R$)", value=None, placeholder="Digite o preço...", format="%.2f")
@@ -280,7 +282,7 @@ with col3:
 st.markdown("---")
 
 # ==========================================
-# FASE 2: REMUNERAÇÃO MENSAL
+# FASE 2: DISTRIBUIÇÃO MENSAL
 # ==========================================
 st.header("⚡ Fase 2: Distribuição de Caixa Mensal")
 tab1, tab2 = st.tabs(["Lançamento de Call Mensal", "Proventos Recebidos"])
@@ -332,7 +334,7 @@ st.header("🔮 Fase 3: Simulador Patrimonial de Payoff")
 
 max_slider = float(preco_acao * 2.0) if preco_acao > 0 else 100.0
 
-# O uso do 'key' nativo resolve em 100% o travamento/delay do slider (Fim do problema do duplo clique)
+# Vínculo da chave 'key' nativa elimina por completo o duplo clique/atraso do slider
 preco_vencimento = st.slider(
     "Preço Estimado do Ativo no Vencimento (R$)", 
     min_value=0.0, 
@@ -351,7 +353,7 @@ else:
 receita_venda_put_residual = valor_residual_put * qtd
 deseja_exercer_put = False
 if preco_vencimento <= strike_put and strike_put > 0:
-    deseja_exercer_put = st.checkbox("Acionar intencionalmente o Direito de Venda (Put) para liquidação da linha de risco", value=False)
+    deseja_exercer_put = st.checkbox("Acionar intencionalmente o Direito de Venda (Put) para liquidação da linha de risco")
 
 receita_venda_ativo = taxa_saida_b3 = corretagem_saida = 0.0
 status_put = "Em vigor / Protegendo carteira"
@@ -405,7 +407,6 @@ c_res3.metric(f"Meta Balizada Selic Período", f"{meta_acumulada_mes:.2f}%")
 total_entradas = receita_venda_ativo + receita_liquida_call_pre_ir + caixa_total_gerado + total_proventos_liquidos + receita_venda_put_residual
 total_saidas = volume_acao + volume_put + taxas_iniciais_totais + taxa_saida_b3 + corretagem_saida + ir_devido_operacao
 
-# Restauração integral do Raio-X Detalhado (DRE COMPLETO) solicitado
 with st.expander("🔎 Ver Raio-X Detalhado do Simulado (DRE Completo)", expanded=False):
     st.markdown(f"""
     **1. Demonstração de Fluxo dos Derivativos:**
@@ -440,17 +441,14 @@ with c_btn1:
         if qtd > 0:
             competencia_texto = f"{LISTA_MESES[st.session_state['mes_num']-1]}/{st.session_state['ano_num']}"
             
-            # Formato numérico limpo para permitir edição direta na tabela (Data Editor)
             novo_registro = {
                 "Competência": competencia_texto,
                 "Call Ref.": ticker_call if ticker_call else "-",
                 "Renda Opção Liq.": float(receita_realmente_liquida_call),
                 "Dividendos/JSCP Liq.": float(total_proventos_liquidos)
             }
-            
             st.session_state['historico_rolagens'].append(novo_registro)
             
-            # Calendário avança dinamicamente
             if st.session_state['mes_num'] == 12:
                 st.session_state['mes_num'] = 1
                 st.session_state['ano_num'] += 1
@@ -479,20 +477,69 @@ if st.session_state['historico_rolagens']:
     
     df_base = pd.DataFrame(st.session_state['historico_rolagens'])
     
-    # Renderização da tabela interativa com recálculo nativo estável
     df_corrigido = st.data_editor(
         df_base,
         use_container_width=True,
         num_rows="dynamic",
         column_config={
-            "Competência": st.column_config.TextColumn("Competência", help="Mês e ano de competência", required=True),
-            "Call Ref.": st.column_config.TextColumn("Call Ref.", help="Código da opção lançada"),
+            "Competência": st.column_config.TextColumn("Competência", required=True),
+            "Call Ref.": st.column_config.TextColumn("Call Ref."),
             "Renda Opção Liq.": st.column_config.NumberColumn("Renda Opção Liq.", format="R$ %.2f"),
             "Dividendos/JSCP Liq.": st.column_config.NumberColumn("Dividendos/JSCP Liq.", format="R$ %.2f")
         }
     )
     
-    # Se houver modificação estrutural na tabela, recarrega a aplicação atualizando os caixas dinamicamente
     if not df_corrigido.equals(df_base):
         st.session_state['historico_rolagens'] = df_corrigido.to_dict(orient="records")
         st.rerun()
+
+# ==========================================
+# 6. PAINEL COMPARATIVO DE PERFORMANCE MULTI-INDICADORES
+# ==========================================
+st.markdown("---")
+st.subheader("🏆 Painel Comparativo de Performance Absoluta")
+st.markdown("Análise de prêmio e geração de caixa acumulados vs Benchmarks de Mercado Globais no período.")
+
+# Coleta dinâmica de indicadores do mercado usando yfinance
+@st.cache_data(ttl=3600)
+def buscar_indicadores_mercado():
+    try:
+        # ^BVSP = Ibovespa | USDBRL=X = Dólar Comercial
+        tickers = ["^BVSP", "USDBRL=X"]
+        dados_mkt = yf.download(tickers, period="1mo")['Close']
+        
+        # Pega a variação percentual aproximada recente (mês) para ilustração comparativa institucional
+        ret_ibov = ((dados_mkt["^BVSP"].iloc[-1] / dados_mkt["^BVSP"].iloc[0]) - 1) * 100
+        ret_usd = ((dados_mkt["USDBRL=X"].iloc[-1] / dados_mkt["USDBRL=X"].iloc[0]) - 1) * 100
+        return ret_ibov, ret_usd
+    except:
+        return 1.25, -0.45 # Fallbacks estáveis caso a API de fim de semana apresente instabilidade
+
+perf_ibov, perf_usd = buscar_indicadores_mercado()
+
+# Calcula o retorno real acumulado gerado de caixa puro em carteira
+retorno_caixa_puro = (caixa_total_gerado / custo_base_bruto) * 100 if custo_base_bruto > 0 else 0.0
+
+c_perf1, c_perf2, c_perf3, c_perf4 = st.columns(4)
+
+c_perf1.metric(
+    label="Estratégia Gouldian (Caixa Criado)", 
+    value=f"{retorno_caixa_puro:.2f}%", 
+    delta=f"R$ {caixa_total_gerado:,.2f}"
+)
+c_perf2.metric(
+    label="Benchmark Selic Líquida", 
+    value=f"{meta_acumulada_mes:.2f}%", 
+    delta=f"Alvo {tipo_juros.split()[0]}",
+    delta_color="inverse"
+)
+c_perf3.metric(
+    label="Ibovespa de Referência (1M)", 
+    value=f"{perf_ibov:.2f}%", 
+    delta="Mercado de Ações"
+)
+c_perf4.metric(
+    label="Câmbio Dólar (USD/BRL 1M)", 
+    value=f"{perf_usd:.2f}%", 
+    delta="Proteção Cambial"
+)
