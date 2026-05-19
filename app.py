@@ -98,7 +98,6 @@ if "session_token" in st.query_params and not st.session_state['logged_in']:
             if "estrategias" not in st.session_state['dados_nuvem']:
                 st.session_state['dados_nuvem']["estrategias"] = {}
             
-            # IMPOSIÇÃO: Sempre inicia 100% virgem no login/refresh
             st.session_state['projeto_index'] = 0
             inicializar_estrategia_vazia()
     except:
@@ -134,7 +133,6 @@ if not st.session_state['logged_in']:
                                 if "estrategias" not in st.session_state['dados_nuvem']:
                                     st.session_state['dados_nuvem']["estrategias"] = {}
                                 
-                                # IMPOSIÇÃO: Inicia completamente virgem ao logar
                                 st.session_state['projeto_index'] = 0
                                 inicializar_estrategia_vazia()
                                 st.rerun()
@@ -180,7 +178,6 @@ with st.expander("👤 Meu Perfil & Estratégias Salvas", expanded=True):
         
     projeto_escolhido = st.selectbox("📁 Selecionar Estratégia Cadastrada no Perfil:", opcoes_projeto, index=st.session_state['projeto_index'])
     
-    # Detecção de troca de projeto por clique do usuário
     if 'ultimo_projeto_escolhido' not in st.session_state or st.session_state['ultimo_projeto_escolhido'] != projeto_escolhido:
         st.session_state['ultimo_projeto_escolhido'] = projeto_escolhido
         st.session_state['projeto_index'] = opcoes_projeto.index(projeto_escolhido)
@@ -193,7 +190,7 @@ with st.expander("👤 Meu Perfil & Estratégias Salvas", expanded=True):
 st.markdown("---")
 
 # ==========================================
-# RECALCULO DINÂMICO DOS ACUMULADOS BASEADO NO HISTÓRICO ATIVO
+# RECALCULO DINÂMICO DOS ACUMULADOS
 # ==========================================
 caixa_acumulado_calls = 0.0
 caixa_proventos = 0.0
@@ -242,22 +239,21 @@ with st.sidebar.expander("🏦 Benchmark Selic", expanded=False):
     meta_mensal = juros_liquido_am * 100
 
 # ==========================================
-# FASE 1: MONTAGEM DO MODELO (TAB-OPTIMIZED FLOW)
+# FASE 1: MONTAGEM DO MODELO (TAB-OPTIMIZED)
 # ==========================================
 st.header("📦 Fase 1: Parâmetros e Alvos da Operação")
 
 col_cron1, col_cron2, col_vazio_cron = st.columns([1, 1, 2])
 with col_cron1:
     index_mes_atual = st.session_state['mes_num'] - 1
-    mes_selecionado = st.selectbox("Mês de Referência deste Lançamento", LISTA_MESES, index=index_mes_atual)
+    mes_selecionado = st.selectbox("Mês de Referência", LISTA_MESES, index=index_mes_atual)
     st.session_state['mes_num'] = LISTA_MESES.index(mes_selecionado) + 1
 with col_cron2:
-    st.session_state['ano_num'] = st.number_input("Ano de Referência deste Lançamento", value=st.session_state['ano_num'], step=1)
+    st.session_state['ano_num'] = st.number_input("Ano de Referência", value=st.session_state['ano_num'], step=1)
 
 st.write("")
 col1, col2, col3 = st.columns(3)
 
-# O TAB flui de maneira nativa e ininterrupta da esquerda para a direita através da remoção de botões internos
 with col1:
     st.subheader("1. Ativo Base")
     preco_acao_raw = st.number_input("Preço de Compra da Ação (R$)", value=st.session_state['val_preco_acao'], placeholder="Digite o preço...", format="%.2f")
@@ -304,7 +300,7 @@ with col3:
 st.markdown("---")
 
 # ==========================================
-# FASE 2: REMUNERAÇÃO DE CAIXA MENSAL
+# FASE 2: REMUNERAÇÃO DE CAIXA MENSAL (COM VERIFICADOR DE SELIC)
 # ==========================================
 st.header("⚡ Fase 2: Distribuição de Caixa Mensal")
 tab1, tab2 = st.tabs(["Lançamento de Call Mensal", "Proventos Recebidos"])
@@ -327,7 +323,16 @@ with tab1:
     with col5:
         st.write("")
         st.success(f"💸 Crédito Líquido Operacional (D+1): **R$ {receita_liquida_call_pre_ir:,.2f}**")
-        st.caption(f"*(Se fechar em Pó: Provisão DARF Opções: R$ {ir_isolado_call_po:,.2f} | Amortização efetiva: R$ {receita_realmente_liquida_call:,.2f})*")
+        st.caption(f"*(Amortização efetiva descontando IR da Opção: R$ {receita_realmente_liquida_call:,.2f})*")
+        
+        # ALERTA ESTRATÉGICO: Verificador do Custo de Oportunidade Mensal (Selic)
+        if premio_call > 0 and custo_base_bruto > 0:
+            rendimento_call_mes = (receita_realmente_liquida_call / custo_base_bruto) * 100
+            if rendimento_call_mes < meta_mensal:
+                st.warning(f"⚠️ **Prêmio Abaixo do Custo de Oportunidade:** A taxa líquida capturada com esta Call ({rendimento_call_mes:.2f}%) **não supera a Selic** do mês ({meta_mensal:.2f}%). Em caso de mercado lateral, o capital não compensa o custo de oportunidade. Avalie buscar um prêmio maior.")
+            else:
+                st.info(f"🎯 **Prêmio Eficiente:** A taxa líquida desta Call ({rendimento_call_mes:.2f}%) garante o pagamento do custo de oportunidade (Selic: {meta_mensal:.2f}%) logo na entrada.")
+        
         if strike_call > 0 and strike_call < strike_minimo:
             st.error("🚨 O Strike selecionado reduz a margem mínima de segurança do Capital Inicial!")
 
@@ -350,7 +355,7 @@ with tab2:
 st.markdown("---")
 
 # ==========================================
-# FASE 3: SIMULADOR DE PAYOFF COMPLETO e DRE
+# FASE 3: SIMULADOR DE PAYOFF COMPLETO
 # ==========================================
 st.header("🔮 Fase 3: Simulador Patrimonial de Payoff")
 
@@ -457,7 +462,7 @@ with st.expander("🔎 Ver Raio-X Detalhado do Simulado (DRE Completo)", expande
 st.markdown("---")
 
 # ==========================================
-# FASE 4: CONSOLIDAR OU NOMEAR E SALVAR PROJETO (IMPOSIÇÃO DE NOME)
+# FASE 4: CONSOLIDAÇÃO E SALVAMENTO DE NUVEM (OBRIGATÓRIO)
 # ==========================================
 st.header("⏳ Fase 4: Consolidação e Retenção em Nuvem")
 
@@ -490,7 +495,7 @@ with c_btn2:
 
 st.write("")
 
-# INPUT DESIGNADO PARA IMPOSIÇÃO DE SALVAMENTO COM NOME OBRIGATÓRIO
+# SISTEMA DE GRAVAÇÃO COM IMPOSIÇÃO DE NOME E AVISOS
 col_save1, col_save2 = st.columns([3, 1])
 with col_save1:
     nome_projeto_salvar = st.text_input("Identificador/Nome Obrigatório para Gravar esta Estratégia", value=st.session_state['nome_estrategia_atual'], placeholder="Ex: PETR4 Collar Conservador 2026")
@@ -499,9 +504,8 @@ with col_save2:
     st.write("")
     if st.button("💾 Gravar Estudo no Perfil", type="primary", use_container_width=True):
         if not nome_projeto_salvar.strip():
-            st.error("❌ Bloqueado: Você deve preencher obrigatoriamente um nome para a estratégia antes de salvar!")
+            st.error("❌ Bloqueado: Preencha um nome para a estratégia antes de salvar!")
         else:
-            # Empacota todo o estado atual e as configurações inseridas para o Loader abrir depois
             dados_estrategia_atual = {
                 "preco_acao": preco_acao if preco_acao > 0 else None,
                 "qtd": qtd if qtd > 0 else None,
@@ -523,16 +527,14 @@ with col_save2:
             
             try:
                 supabase.table("usuarios").update({"dados": st.session_state['dados_nuvem']}).eq("email", st.session_state['user_email_completo']).execute()
-                st.success(f"🎉 Sucesso: Estratégia '{nome_projeto_salvar.strip()}' foi arquivada e sincronizada!")
-                
-                # Seta o index do combo de perfil para a recém criada
+                st.success(f"🎉 Sucesso: Estratégia '{nome_projeto_salvar.strip()}' arquivada!")
                 st.session_state['projeto_index'] = list(st.session_state['dados_nuvem']["estrategias"].keys()).index(nome_projeto_salvar.strip()) + 1
                 st.rerun()
             except Exception as err:
                 st.error(f"Erro ao salvar: {err}")
 
 # ==========================================
-# 5. TABELA DE AUDITORIA INTERATIVA (SISTEMA DE CORREÇÃO DE ERROS)
+# 5. TABELA DE AUDITORIA INTERATIVA
 # ==========================================
 if st.session_state['historico_rolagens']:
     st.markdown("---")
@@ -561,26 +563,25 @@ if st.session_state['historico_rolagens']:
 # ==========================================
 st.markdown("---")
 st.subheader("🏆 Painel Comparativo de Performance Absoluta")
-st.markdown("Análise de prêmio e geração de caixa acumulados da estratégia vs Benchmarks de Mercado Globais no mesmo período.")
+st.markdown("Análise de geração de caixa acumulado da estratégia vs Benchmarks Globais no mesmo período.")
 
 @st.cache_data(ttl=3600)
 def buscar_indicadores_mercado():
     try:
-        # ^BVSP = Ibovespa | USDBRL=X = Dólar Comercial
         tickers = ["^BVSP", "USDBRL=X"]
         dados_mkt = yf.download(tickers, period="1mo")['Close']
         ret_ibov = ((dados_mkt["^BVSP"].iloc[-1] / dados_mkt["^BVSP"].iloc[0]) - 1) * 100
         ret_usd = ((dados_mkt["USDBRL=X"].iloc[-1] / dados_mkt["USDBRL=X"].iloc[0]) - 1) * 100
-        return ret_ibov, ret_usd
+        return float(ret_ibov), float(ret_usd)
     except:
-        return 1.25, -0.45 
+        return 0.0, 0.0
 
 perf_ibov, perf_usd = buscar_indicadores_mercado()
 retorno_caixa_puro = (caixa_total_gerado / custo_base_bruto) * 100 if custo_base_bruto > 0 else 0.0
 
 c_perf1, c_perf2, c_perf3, c_perf4 = st.columns(4)
 c_perf1.metric(
-    label="Estratégia Gouldian (Caixa Gerado)", 
+    label="Caixa Gerado (Gouldian)", 
     value=f"{retorno_caixa_puro:.2f}%", 
     delta=f"R$ {caixa_total_gerado:,.2f}"
 )
@@ -591,12 +592,12 @@ c_perf2.metric(
     delta_color="inverse"
 )
 c_perf3.metric(
-    label="Ibovespa de Referência (Ações)", 
+    label="Ibovespa (Mercado de Ações)", 
     value=f"{perf_ibov:.2f}%", 
-    delta="Retorno de Mercado"
+    delta="1 Mês"
 )
 c_perf4.metric(
     label="Câmbio Dólar (USD/BRL)", 
     value=f"{perf_usd:.2f}%", 
-    delta="Benchmark Cambial"
+    delta="1 Mês"
 )
