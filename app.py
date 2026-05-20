@@ -19,9 +19,6 @@ REMOVER_BRANDING_CSS = """
 """
 st.markdown(REMOVER_BRANDING_CSS, unsafe_allow_html=True)
 
-LISTA_MESES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", 
-               "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
-
 @st.cache_resource
 def init_connection():
     url = st.secrets["SUPABASE_URL"]
@@ -40,8 +37,7 @@ except Exception as e:
 def inicializar_estrategia_vazia():
     st.session_state['nome_estrategia_atual'] = ""
     st.session_state['historico_rolagens'] = []
-    st.session_state['mes_num'] = datetime.date.today().month
-    st.session_state['ano_num'] = datetime.date.today().year
+    st.session_state['ciclo_nome'] = f"Série {datetime.date.today().strftime('%b/%y')}"
     st.session_state['val_preco_acao'] = None
     st.session_state['val_qtd'] = None
     st.session_state['val_ticker_put'] = ""
@@ -56,8 +52,7 @@ def inicializar_estrategia_vazia():
 def carregar_estrategia_salva(nome, pkg):
     st.session_state['nome_estrategia_atual'] = nome
     st.session_state['historico_rolagens'] = pkg.get('historico_rolagens', [])
-    st.session_state['mes_num'] = pkg.get('mes_num', datetime.date.today().month)
-    st.session_state['ano_num'] = pkg.get('ano_num', datetime.date.today().year)
+    st.session_state['ciclo_nome'] = pkg.get('ciclo_nome', f"Série {datetime.date.today().strftime('%b/%y')}")
     st.session_state['val_preco_acao'] = pkg.get('preco_acao', None)
     st.session_state['val_qtd'] = pkg.get('qtd', None)
     st.session_state['val_ticker_put'] = pkg.get('ticker_put', "")
@@ -79,7 +74,6 @@ if 'username' not in st.session_state:
 if 'preco_acao_tela' not in st.session_state:
     st.session_state['preco_acao_tela'] = 0.0
 
-# PERSISTÊNCIA DE LOGIN SEGURA VIA TOKEN JWT
 if "access_token" in st.query_params and not st.session_state['logged_in']:
     token_jwt = st.query_params["access_token"]
     try:
@@ -118,7 +112,6 @@ if not st.session_state['logged_in']:
                 if st.button("Entrar no Sistema", type="primary", use_container_width=True):
                     if email_input and senha_input:
                         try:
-                            # LOGIN NATIVO SUPABASE
                             auth_response = supabase.auth.sign_in_with_password({"email": email_input, "password": senha_input})
                             
                             st.session_state['logged_in'] = True
@@ -131,10 +124,8 @@ if not st.session_state['logged_in']:
                                 st.session_state['dados_nuvem'] = db_res.data[0].get("dados", {"estrategias": {}})
                             else:
                                 st.session_state['dados_nuvem'] = {"estrategias": {}}
-                                # Inserindo a senha fake para evitar bloqueio do Supabase Database (Not Null Constraint)
                                 supabase.table("usuarios").insert({
                                     "email": email_input,
-                                    "senha": "auth_nativa_supabase", 
                                     "dados": st.session_state['dados_nuvem']
                                 }).execute()
                             
@@ -142,47 +133,39 @@ if not st.session_state['logged_in']:
                             inicializar_estrategia_vazia()
                             st.rerun()
                         except Exception as err:
-                            st.error("Erro de autenticação. Verifique e-mail e senha ou se a conta foi confirmada.")
+                            st.error("Erro de autenticação. Verifique e-mail e senha digitados.")
                     else:
                         st.warning("Preencha todos os campos.")
             
             elif modo == "Criar Conta":
-                if st.button("Concluir Cadastro", type="primary", use_container_width=True):
+                if st.button("Concluir Cadastro e Entrar", type="primary", use_container_width=True):
                     if email_input and senha_input:
                         try:
-                            # CADASTRO NATIVO SUPABASE
                             auth_response = supabase.auth.sign_up({"email": email_input, "password": senha_input})
                             
-                            st.session_state['dados_nuvem'] = {"estrategias": {}}
+                            if auth_response.session:
+                                st.session_state['logged_in'] = True
+                                st.session_state['username'] = email_input.split('@')[0].capitalize()
+                                st.session_state['user_email_completo'] = email_input
+                                st.query_params["access_token"] = auth_response.session.access_token
                             
-                            # Inserindo a senha fake para evitar bloqueio do Supabase Database
+                            st.session_state['dados_nuvem'] = {"estrategias": {}}
                             supabase.table("usuarios").insert({
                                 "email": email_input,
-                                "senha": "auth_nativa_supabase",
                                 "dados": st.session_state['dados_nuvem']
                             }).execute()
                             
-                            st.success("✅ Conta criada com sucesso! Verifique seu e-mail para validar a conta (se configurado), ou faça login para entrar.")
+                            st.success("🎉 Conta criada com sucesso!")
+                            st.rerun()
                         except Exception as err:
-                            st.error(f"Erro ao criar conta (a senha deve ter no mínimo 6 caracteres). Detalhes: {err}")
+                            st.error(f"Erro ao criar conta (mínimo 6 caracteres). Detalhes: {err}")
         
         elif modo == "Esqueci a Senha":
-            email_rec = st.text_input("E-mail de recuperação").strip().lower()
-            if st.button("Enviar link de recuperação", type="primary", use_container_width=True):
-                if email_rec:
-                    try:
-                        # DISPARO DE EMAIL DE RECUPERAÇÃO NATIVO
-                        supabase.auth.reset_password_for_email(email_rec, options={"redirect_to": "https://calculadoracollarb.streamlit.app/"})
-                        st.success("📩 Instruções enviadas! Verifique sua caixa de entrada ou spam.")
-                    except Exception as err:
-                        st.error("Erro ao solicitar recuperação. Tente novamente.")
-                else:
-                    st.warning("Preencha o e-mail.")
-                    
+            st.info("🔧 Módulo de recuperação por e-mail em configuração. Acione o suporte caso precise de reset imediato.")
     st.stop()
 
 # ==========================================
-# 2. SEÇÃO DE PERFIL E GERENCIAMENTO DE PROJETOS (LOADER)
+# 2. SEÇÃO DE PERFIL E GERENCIAMENTO
 # ==========================================
 st.title("Gouldian Invest | Gestão de Collar Dinâmico")
 st.write(f"Sessão Ativa: **{st.session_state['username']}** | Conexão Segura e Criptografada 🛡️")
@@ -256,12 +239,6 @@ with st.sidebar.expander("🏦 Benchmark Selic", expanded=False):
     juros_bruto_aa = st.number_input("Selic Bruta (% a.a.)", value=14.50, step=0.1) / 100
     ir_renda_fixa = st.number_input("IR Renda Fixa (%)", value=22.5, step=0.5) / 100
     juros_liquido_aa = juros_bruto_aa * (1 - ir_renda_fixa)
-    tipo_juros = st.sidebar.radio("Regime Tributário/Selic", ["Simples (Conservador)", "Composto (Equivalente)"])
-    if "Simples" in tipo_juros:
-        juros_liquido_am = juros_liquido_aa / 12
-    else:
-        juros_liquido_am = ((1 + juros_liquido_aa) ** (1/12)) - 1
-    meta_mensal = juros_liquido_am * 100
 
 # ==========================================
 # FASE 1: MONTAGEM DO MODELO E CRONOLOGIA
@@ -270,11 +247,10 @@ st.header("📦 Fase 1: Parâmetros e Alvos da Operação")
 
 col_cron1, col_cron2, col_vazio_cron = st.columns([1, 1, 2])
 with col_cron1:
-    index_mes_atual = st.session_state['mes_num'] - 1
-    mes_selecionado = st.selectbox("Mês de Referência", LISTA_MESES, index=index_mes_atual)
-    st.session_state['mes_num'] = LISTA_MESES.index(mes_selecionado) + 1
+    ciclo_nome_input = st.text_input("Identificador do Ciclo (Ex: Série Março/26, Week 2, etc.)", value=st.session_state['ciclo_nome'])
+    st.session_state['ciclo_nome'] = ciclo_nome_input
 with col_cron2:
-    st.session_state['ano_num'] = st.number_input("Ano de Referência", value=st.session_state['ano_num'], step=1)
+    data_montagem = st.date_input("Data de Montagem / Rolagem", value=datetime.date.today(), format="DD/MM/YYYY")
 
 st.write("")
 col1, col2, col3 = st.columns(3)
@@ -319,26 +295,32 @@ with col3:
     st.info(f"**Amortização Líquida Total:** R$ {caixa_total_gerado:,.2f}")
     st.metric("Custo de Linha Ajustado", f"R$ {custo_base_ajustado:,.2f}", f"PM Real: R$ {preco_medio_atual:.2f}", delta_color="inverse")
     st.warning(f"🎯 **Strike Mínimo Ideal:** R$ {strike_minimo:.2f}")
-    if meta_financeira_12m > 0:
-        st.info(f"💰 **Alvo Renda Fixa (12M):** R$ {meta_financeira_12m:,.2f}")
 
 st.markdown("---")
 
 # ==========================================
-# FASE 2: REMUNERAÇÃO DE CAIXA MENSAL
+# FASE 2: REMUNERAÇÃO E CRONOLOGIA DE VENCIMENTO
 # ==========================================
-st.header("⚡ Fase 2: Distribuição de Caixa Mensal")
-tab1, tab2 = st.tabs(["Lançamento de Call Mensal", "Proventos Recebidos"])
+st.header("⚡ Fase 2: Distribuição de Caixa do Ciclo")
+tab1, tab2 = st.tabs(["Lançamento de Call (Ciclo)", "Proventos Recebidos"])
 
 with tab1:
     col4, col5 = st.columns([1, 2])
     with col4:
         ticker_call = st.text_input("Código da Call Curta", value=st.session_state['val_ticker_call'], placeholder="Ex: PETRF54")
+        data_vencimento = st.date_input("Data de Vencimento da Call", value=data_montagem + datetime.timedelta(days=21), format="DD/MM/YYYY")
         strike_call_raw = st.number_input("Strike da Call Lançada (R$)", value=st.session_state['val_strike_call'], placeholder="Ex: 54.19", format="%.2f")
         premio_call_raw = st.number_input("Prêmio Bruto Recebido (R$)", value=st.session_state['val_premio_call'], placeholder="Ex: 0.25", format="%.2f")
         
         strike_call = strike_call_raw if strike_call_raw is not None else 0.0
         premio_call = premio_call_raw if premio_call_raw is not None else 0.0
+
+    # Lógica Temporal Exata (Dias Úteis)
+    dias_uteis = len(pd.bdate_range(data_montagem, data_vencimento))
+    dias_uteis = max(1, dias_uteis) # Previne erro de divisão por zero se data for igual
+    
+    # Cálculo da Selic exata do período usando a fórmula de capitalização composta de dias úteis
+    meta_ciclo_perc = (((1 + juros_liquido_aa) ** (dias_uteis / 252)) - 1) * 100
 
     volume_call = premio_call * qtd
     custos_atrito_call = (volume_call * emol_opcao) + (corretagem if corretagem > 0 else 0.0)
@@ -349,14 +331,18 @@ with tab1:
     with col5:
         st.write("")
         st.success(f"💸 Crédito Líquido Operacional (D+1): **R$ {receita_liquida_call_pre_ir:,.2f}**")
-        st.caption(f"*(Amortização efetiva descontando IR da Opção: R$ {receita_realmente_liquida_call:,.2f})*")
+        
+        mes_pagamento_darf = (data_vencimento.replace(day=1) + datetime.timedelta(days=31)).strftime('%B/%Y').capitalize()
+        st.caption(f"*(IR de Opções: R$ {ir_isolado_call_po:,.2f} - Vencimento da DARF: Último dia útil de {mes_pagamento_darf})*")
         
         if premio_call > 0 and custo_base_bruto > 0:
-            rendimento_call_mes = (receita_realmente_liquida_call / custo_base_bruto) * 100
-            if rendimento_call_mes < meta_mensal:
-                st.warning(f"⚠️ **Atenção (Custo de Oportunidade):** A taxa líquida desta Call ({rendimento_call_mes:.2f}%) está **abaixo** da Selic do mês ({meta_mensal:.2f}%). Tente um prêmio maior.")
+            rendimento_call_ciclo = (receita_realmente_liquida_call / custo_base_bruto) * 100
+            
+            st.markdown(f"**Análise de Eficiência do Ciclo ({dias_uteis} dias úteis):**")
+            if rendimento_call_ciclo < meta_ciclo_perc:
+                st.warning(f"⚠️ **Abaixo da Selic Equivalente:** A taxa líquida capturada ({rendimento_call_ciclo:.2f}%) não bate o custo de oportunidade exato do período ({meta_ciclo_perc:.2f}%).")
             else:
-                st.info(f"🎯 **Prêmio Eficiente:** A taxa líquida desta Call ({rendimento_call_mes:.2f}%) supera a Selic mensal ({meta_mensal:.2f}%).")
+                st.info(f"🎯 **Prêmio Eficiente:** A taxa líquida ({rendimento_call_ciclo:.2f}%) supera a Selic acumulada nestes {dias_uteis} dias úteis ({meta_ciclo_perc:.2f}%).")
         
         if strike_call > 0 and strike_call < strike_minimo:
             st.error("🚨 O Strike selecionado reduz a margem mínima de segurança do Capital Inicial!")
@@ -442,11 +428,13 @@ lucro_liquido_final = lucro_bruto_operacao - ir_devido_operacao
 
 rentabilidade_sobre_capital_inicial = (lucro_liquido_final / custo_base_bruto) * 100 if custo_base_bruto > 0 else 0.0
 
-meses_projetados = len(st.session_state['historico_rolagens']) + 1
-if "Simples" in tipo_juros:
-    meta_acumulada_projetada = meta_mensal * meses_projetados
-else:
-    meta_acumulada_projetada = (((1 + juros_liquido_am) ** meses_projetados) - 1) * 100
+# Calcula Selic acumulada projetada baseada no histórico + o ciclo atual simulado
+mult_projetado = 1.0
+for linha in st.session_state['historico_rolagens']:
+    meta_hist = linha.get('_Selic Ciclo', 0.0)
+    mult_projetado *= (1 + (meta_hist / 100))
+mult_projetado *= (1 + (meta_ciclo_perc / 100))
+meta_acumulada_projetada = (mult_projetado - 1) * 100
 
 st.markdown(f"#### Comportamento da Estrutura: **{cenario_nome}**")
 
@@ -466,10 +454,8 @@ c_btn1, c_btn2 = st.columns(2)
 with c_btn1:
     if st.button("➕ Consolidar Competência no Histórico de Tabelas", use_container_width=True):
         if qtd > 0:
-            competencia_texto = f"{LISTA_MESES[st.session_state['mes_num']-1]}/{st.session_state['ano_num']}"
-            
             novo_registro = {
-                "Competência": competencia_texto,
+                "Série/Ciclo": st.session_state['ciclo_nome'],
                 "Call Ref.": ticker_call if ticker_call else "-",
                 "Renda Opção Liq.": float(receita_realmente_liquida_call),
                 "Dividendos/JSCP Liq.": float(total_proventos_liquidos),
@@ -480,16 +466,19 @@ with c_btn1:
                 "_DARF Retido Call": float(ir_isolado_call_po),
                 "_Dividendos Isentos": float(dividendos_brutos),
                 "_JSCP Bruto": float(jscp_bruto),
-                "_IR JSCP": float(ir_jscp)
+                "_IR JSCP": float(ir_jscp),
+                
+                "_Data Montagem": data_montagem.strftime('%Y-%m-%d'),
+                "_Data Vencimento": data_vencimento.strftime('%Y-%m-%d'),
+                "_Selic Ciclo": float(meta_ciclo_perc)
             }
             st.session_state['historico_rolagens'].append(novo_registro)
             
-            # Avanço de Cronologia Inteligente
-            if st.session_state['mes_num'] == 12:
-                st.session_state['mes_num'] = 1
-                st.session_state['ano_num'] += 1
-            else:
-                st.session_state['mes_num'] += 1
+            # Avança nomeação da série automaticamente
+            meses_nomes = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
+            prox_data = data_vencimento + datetime.timedelta(days=21)
+            st.session_state['ciclo_nome'] = f"Série {meses_nomes[prox_data.month-1]}/{prox_data.strftime('%y')}"
+            
             st.rerun()
         else:
             st.error("Insira o preço e a quantidade do Ativo Base para registrar dados.")
@@ -523,8 +512,7 @@ with col_save2:
                 "dividendos": dividendos_brutos if dividendos_brutos > 0 else None,
                 "jscp": jscp_bruto if jscp_bruto > 0 else None,
                 "historico_rolagens": st.session_state['historico_rolagens'],
-                "mes_num": st.session_state['mes_num'],
-                "ano_num": st.session_state['ano_num']
+                "ciclo_nome": st.session_state['ciclo_nome']
             }
             
             st.session_state['dados_nuvem']["estrategias"][nome_projeto_salvar.strip()] = dados_estrategia_atual
@@ -546,12 +534,17 @@ if st.session_state['historico_rolagens']:
     st.subheader("📊 Relatório Cronológico de Amortização Patrimonial")
     
     df_base = pd.DataFrame(st.session_state['historico_rolagens'])
+    
+    # Suporte legado para tabelas salvas no modelo antigo de "Competência"
+    if "Competência" in df_base.columns and "Série/Ciclo" not in df_base.columns:
+        df_base.rename(columns={"Competência": "Série/Ciclo"}, inplace=True)
+        
     df_corrigido = st.data_editor(
         df_base,
         use_container_width=True,
         num_rows="dynamic",
         column_config={
-            "Competência": st.column_config.TextColumn("Competência", required=True),
+            "Série/Ciclo": st.column_config.TextColumn("Série/Ciclo", required=True),
             "Call Ref.": st.column_config.TextColumn("Call Ref."),
             "Renda Opção Liq.": st.column_config.NumberColumn("Renda Opção Liq.", format="R$ %.2f"),
             "Dividendos/JSCP Liq.": st.column_config.NumberColumn("Dividendos/JSCP Liq.", format="R$ %.2f"),
@@ -561,7 +554,10 @@ if st.session_state['historico_rolagens']:
             "_DARF Retido Call": None,
             "_Dividendos Isentos": None,
             "_JSCP Bruto": None,
-            "_IR JSCP": None
+            "_IR JSCP": None,
+            "_Data Montagem": None,
+            "_Data Vencimento": None,
+            "_Selic Ciclo": None
         }
     )
     
@@ -570,12 +566,12 @@ if st.session_state['historico_rolagens']:
         st.rerun()
 
     st.write("")
-    st.subheader("🧾 Extrato Mensal Detalhado")
-    meses_consolidados_lista = [r["Competência"] for r in st.session_state['historico_rolagens']]
+    st.subheader("🧾 Extrato do Ciclo Detalhado")
+    meses_consolidados_lista = [r.get("Série/Ciclo", r.get("Competência", "-")) for r in st.session_state['historico_rolagens']]
     
     if meses_consolidados_lista:
-        mes_extrato = st.selectbox("Selecione o Mês para Auditoria:", meses_consolidados_lista)
-        dados_mes = next((item for item in st.session_state['historico_rolagens'] if item["Competência"] == mes_extrato), None)
+        mes_extrato = st.selectbox("Selecione o Ciclo para Auditoria Fiscal:", meses_consolidados_lista)
+        dados_mes = next((item for item in st.session_state['historico_rolagens'] if item.get("Série/Ciclo", item.get("Competência")) == mes_extrato), None)
         
         if dados_mes:
             c_ext1, c_ext2, c_ext3 = st.columns(3)
@@ -583,14 +579,14 @@ if st.session_state['historico_rolagens']:
                 st.markdown("**📊 Operação de Opções**")
                 st.write(f"Prêmio Bruto: R$ {dados_mes.get('_Premio Bruto Call', 0.0):,.2f}")
                 st.write(f"Custos/Corretagem: R$ -{dados_mes.get('_Custos B3 e Corretagem Call', 0.0):,.2f}")
-                st.write(f"DARF (IR): R$ -{dados_mes.get('_DARF Retido Call', 0.0):,.2f}")
+                st.write(f"DARF Estimada (Opções): R$ -{dados_mes.get('_DARF Retido Call', 0.0):,.2f}")
                 st.info(f"**Líquido Opção:** R$ {dados_mes.get('Renda Opção Liq.', 0.0):,.2f}")
                 
             with c_ext2:
                 st.markdown("**💰 Eventos Corporativos**")
                 st.write(f"Dividendos Isentos: R$ {dados_mes.get('_Dividendos Isentos', 0.0):,.2f}")
                 st.write(f"JSCP Bruto: R$ {dados_mes.get('_JSCP Bruto', 0.0):,.2f}")
-                st.write(f"IR Retido (JSCP): R$ -{dados_mes.get('_IR JSCP', 0.0):,.2f}")
+                st.write(f"IR Retido na Fonte: R$ -{dados_mes.get('_IR JSCP', 0.0):,.2f}")
                 st.info(f"**Líquido Proventos:** R$ {dados_mes.get('Dividendos/JSCP Liq.', 0.0):,.2f}")
                 
             with c_ext3:
@@ -623,14 +619,17 @@ def buscar_indicadores_mercado():
 perf_ibov, perf_usd = buscar_indicadores_mercado()
 retorno_caixa_puro = (caixa_total_gerado / custo_base_bruto) * 100 if custo_base_bruto > 0 else 0.0
 
+# Compõe juros reais da Selic baseada apenas nos ciclos já validados/encerrados na tabela
 meses_consolidados = len(st.session_state['historico_rolagens'])
-if meses_consolidados == 0:
-    meta_acumulada_realizada = 0.0
-else:
-    if "Simples" in tipo_juros:
-        meta_acumulada_realizada = meta_mensal * meses_consolidados
-    else:
-        meta_acumulada_realizada = (((1 + juros_liquido_am) ** meses_consolidados) - 1) * 100
+mult_realizado = 1.0
+for linha in st.session_state['historico_rolagens']:
+    meta_hist = linha.get('_Selic Ciclo', 0.0)
+    # Fallback caso a pessoa carregue uma planilha velha do sistema (onde a Selic não era salva por ciclo)
+    if meta_hist == 0.0 and juros_liquido_aa > 0:
+        meta_hist = (((1 + juros_liquido_aa) ** (21 / 252)) - 1) * 100
+    mult_realizado *= (1 + (meta_hist / 100))
+
+meta_acumulada_realizada = (mult_realizado - 1) * 100
 
 alpha_gerado = retorno_caixa_puro - meta_acumulada_realizada
 darf_mes_atual = ir_isolado_call_po if 'ir_isolado_call_po' in locals() else 0.0
@@ -645,7 +644,7 @@ c_perf1.metric(
 c_perf2.metric(
     label="Selic Líquida Consolidada", 
     value=f"{meta_acumulada_realizada:.2f}%", 
-    delta=f"{meses_consolidados} Meses",
+    delta=f"{meses_consolidados} Ciclos",
     delta_color="off"
 )
 c_perf3.metric(
@@ -655,9 +654,9 @@ c_perf3.metric(
     delta_color="normal"
 )
 c_perf4.metric(
-    label="DARF Opções (Mês Atual)", 
+    label="DARF Opções Pendente", 
     value=f"R$ {darf_mes_atual:,.2f}", 
-    delta="Provisão Fiscal",
+    delta="Provisão para Mês Subsequente",
     delta_color="inverse"
 )
 c_perf5.metric(
