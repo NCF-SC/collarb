@@ -69,24 +69,36 @@ def carregar_estrategia_salva(nome, pkg):
     st.session_state['val_jscp'] = pkg.get('jscp', None)
     st.session_state['val_data_vencimento'] = datetime.date.today() + datetime.timedelta(days=21)
 
-# --- MOTOR DE BUSCA INSTITUCIONAL (BRAPI) ---
+# --- MOTOR DE BUSCA INSTITUCIONAL (BRAPI) COM DIAGNÓSTICO ---
 def buscar_dados_opcao_brapi(ticker):
     """
     Conecta à API oficial da BrAPI para extrair Preço, Strike e Vencimento exatos da B3.
+    Inclui diagnóstico de erros em tela.
     """
     if not ticker:
         return None
         
     token = st.secrets.get("BRAPI_TOKEN", "")
     if not token:
-        st.warning("⚠️ O Token da BrAPI não foi configurado nas configurações (Secrets).")
+        st.error("🚨 ERRO: O sistema não encontrou o BRAPI_TOKEN nos Secrets do Streamlit.")
         return None
         
-    # Endpoint oficial da cotação
     url = f"https://brapi.dev/api/quote/{ticker.upper()}?token={token}"
     
     try:
         response = requests.get(url, timeout=10)
+        
+        # Diagnóstico de Status da API
+        if response.status_code == 401:
+            st.error("🚨 ERRO 401: Token da BrAPI inválido ou não autorizado. Verifique se copiou corretamente.")
+            return None
+        elif response.status_code == 404:
+            st.warning(f"⚠️ AVISO 404: A API não encontrou nenhuma opção ativa com o ticker '{ticker.upper()}'.")
+            return None
+        elif response.status_code != 200:
+            st.error(f"🚨 ERRO {response.status_code}: Falha de comunicação com o servidor da BrAPI.")
+            return None
+
         data = response.json()
         
         if "results" in data and len(data["results"]) > 0:
@@ -98,12 +110,16 @@ def buscar_dados_opcao_brapi(ticker):
             
             vencimento_date = None
             if vencimento_str:
-                # O formato devolvido é ISO: "2026-06-19T00:00:00.000Z"
+                # Formato ISO: "2026-06-19T00:00:00.000Z"
                 vencimento_date = datetime.datetime.strptime(vencimento_str[:10], "%Y-%m-%d").date()
                 
             return {"preco": preco, "strike": strike, "vencimento": vencimento_date}
-        return None
-    except Exception as e:
+        else:
+            st.warning("⚠️ A API conectou, mas devolveu um resultado vazio para este ticker.")
+            return None
+            
+    except requests.exceptions.RequestException as e:
+        st.error(f"🚨 ERRO DE REDE: Sua internet ou o servidor bloqueou o acesso. Detalhe: {e}")
         return None
 
 # ==========================================
@@ -337,8 +353,6 @@ with col2:
                         st.session_state['val_strike_put'] = dados_api['strike']
                     st.toast("✅ Put carregada com sucesso!")
                     st.rerun()
-                else:
-                    st.toast("Opção não encontrada ou mercado fechado.", icon="❌")
 
         preco_put_raw = st.number_input("Prêmio Pago (R$)", value=st.session_state['val_preco_put'], placeholder="0.00", format="%.2f", help="Custo unitário da opção de venda")
         strike_put_raw = st.number_input("Strike (R$)", value=st.session_state['val_strike_put'], placeholder="0.00", format="%.2f", help="Preço garantido de venda em caso de queda")
@@ -405,8 +419,6 @@ with tab1:
                             st.session_state['val_data_vencimento'] = dados_api['vencimento']
                         st.toast("✅ Call sincronizada com sucesso!")
                         st.rerun()
-                    else:
-                        st.toast("Opção não encontrada ou mercado fechado.", icon="❌")
 
             data_vencimento = st.date_input("🗓️ Data de Vencimento", value=st.session_state['val_data_vencimento'], format="DD/MM/YYYY", help="Atualizado automaticamente pela API da B3.", key="input_venc")
             st.session_state['val_data_vencimento'] = data_vencimento
