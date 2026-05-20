@@ -10,7 +10,6 @@ from supabase import create_client, Client
 # ==========================================
 st.set_page_config(page_title="Gouldian Invest", page_icon="🦅", layout="wide")
 
-# CSS oculto para remover assinaturas do Streamlit e garantir interface própria
 REMOVER_BRANDING_CSS = """
     <style>
     #MainMenu {visibility: hidden;}
@@ -40,7 +39,7 @@ def hash_senha(senha):
     return hashlib.sha256(senha.encode()).hexdigest()
 
 # ==========================================
-# FUNCTIONS DE GERENCIAMENTO DE ESTADOS (VIRGEM VS LOAD)
+# FUNCTIONS DE GERENCIAMENTO DE ESTADOS (ANTI-QUEBRA)
 # ==========================================
 def inicializar_estrategia_vazia():
     st.session_state['nome_estrategia_atual'] = ""
@@ -59,6 +58,7 @@ def inicializar_estrategia_vazia():
     st.session_state['val_jscp'] = None
 
 def carregar_estrategia_salva(nome, pkg):
+    # Uso de .get() garante que código novo não quebre projetos velhos
     st.session_state['nome_estrategia_atual'] = nome
     st.session_state['historico_rolagens'] = pkg.get('historico_rolagens', [])
     st.session_state['mes_num'] = pkg.get('mes_num', datetime.date.today().month)
@@ -84,7 +84,6 @@ if 'username' not in st.session_state:
 if 'preco_acao_tela' not in st.session_state:
     st.session_state['preco_acao_tela'] = 0.0
 
-# PERSISTÊNCIA DE LOGIN (Evita deslogar no F5/Refresh)
 if "session_token" in st.query_params and not st.session_state['logged_in']:
     token_email = st.query_params["session_token"]
     try:
@@ -97,7 +96,6 @@ if "session_token" in st.query_params and not st.session_state['logged_in']:
             st.session_state['dados_nuvem'] = user_db.get("dados", {})
             if "estrategias" not in st.session_state['dados_nuvem']:
                 st.session_state['dados_nuvem']["estrategias"] = {}
-            
             st.session_state['projeto_index'] = 0
             inicializar_estrategia_vazia()
     except:
@@ -110,57 +108,80 @@ if not st.session_state['logged_in']:
     col_login, col_vazia = st.columns([1, 2])
     with col_login:
         st.subheader("Painel de Acesso")
-        modo = st.radio("Selecione:", ["Login", "Criar Conta"], horizontal=True)
+        modo = st.radio("Selecione:", ["Login", "Criar Conta", "Esqueci a Senha"], horizontal=True)
         
-        email_input = st.text_input("E-mail").strip().lower()
-        senha_input = st.text_input("Senha", type="password")
-        
-        if modo == "Login":
-            if st.button("Entrar no Sistema", type="primary", use_container_width=True):
-                if email_input and senha_input:
-                    senha_criptografada = hash_senha(senha_input)
-                    try:
-                        resposta = supabase.table("usuarios").select("*").eq("email", email_input).execute()
-                        if len(resposta.data) > 0:
-                            user_db = resposta.data[0]
-                            if user_db["senha"] == senha_criptografada:
+        if modo in ["Login", "Criar Conta"]:
+            email_input = st.text_input("E-mail").strip().lower()
+            senha_input = st.text_input("Senha", type="password")
+            
+            if modo == "Login":
+                if st.button("Entrar no Sistema", type="primary", use_container_width=True):
+                    if email_input and senha_input:
+                        senha_criptografada = hash_senha(senha_input)
+                        try:
+                            resposta = supabase.table("usuarios").select("*").eq("email", email_input).execute()
+                            if len(resposta.data) > 0:
+                                user_db = resposta.data[0]
+                                if user_db["senha"] == senha_criptografada:
+                                    st.session_state['logged_in'] = True
+                                    st.session_state['username'] = email_input.split('@')[0].capitalize()
+                                    st.session_state['user_email_completo'] = email_input
+                                    st.query_params["session_token"] = email_input
+                                    
+                                    st.session_state['dados_nuvem'] = user_db.get("dados", {})
+                                    if "estrategias" not in st.session_state['dados_nuvem']:
+                                        st.session_state['dados_nuvem']["estrategias"] = {}
+                                    
+                                    st.session_state['projeto_index'] = 0
+                                    inicializar_estrategia_vazia()
+                                    st.rerun()
+                                else:
+                                    st.error("Senha incorreta.")
+                            else:
+                                st.error("Usuário não cadastrado.")
+                        except Exception as err:
+                            st.error(f"Erro de autenticação: {err}")
+                    else:
+                        st.warning("Preencha todos os campos.")
+            
+            elif modo == "Criar Conta":
+                if st.button("Concluir Cadastro e Entrar", type="primary", use_container_width=True):
+                    if email_input and senha_input:
+                        try:
+                            verifica = supabase.table("usuarios").select("email").eq("email", email_input).execute()
+                            if len(verifica.data) > 0:
+                                st.error("Este e-mail já se encontra registrado.")
+                            else:
+                                # Cria usuário
+                                novo_user = {
+                                    "email": email_input,
+                                    "senha": hash_senha(senha_input),
+                                    "dados": {"estrategias": {}}
+                                }
+                                supabase.table("usuarios").insert(novo_user).execute()
+                                
+                                # Auto-Login automático imediato
                                 st.session_state['logged_in'] = True
                                 st.session_state['username'] = email_input.split('@')[0].capitalize()
                                 st.session_state['user_email_completo'] = email_input
                                 st.query_params["session_token"] = email_input
-                                
-                                st.session_state['dados_nuvem'] = user_db.get("dados", {})
-                                if "estrategias" not in st.session_state['dados_nuvem']:
-                                    st.session_state['dados_nuvem']["estrategias"] = {}
-                                
+                                st.session_state['dados_nuvem'] = {"estrategias": {}}
                                 st.session_state['projeto_index'] = 0
                                 inicializar_estrategia_vazia()
+                                
+                                # Nota mental: Backend deve ser configurado com SMTP para o disparo de boas-vindas
                                 st.rerun()
-                            else:
-                                st.error("Senha incorreta.")
-                        else:
-                            st.error("Usuário não cadastrado.")
-                    except Exception as err:
-                        st.error(f"Erro de autenticação: {err}")
+                        except Exception as err:
+                            st.error(f"Erro ao salvar cadastro: {err}")
+        
+        elif modo == "Esqueci a Senha":
+            email_rec = st.text_input("E-mail de recuperação").strip().lower()
+            if st.button("Enviar link de recuperação", type="primary", use_container_width=True):
+                if email_rec:
+                    st.success("📩 Se o e-mail estiver cadastrado, as instruções foram enviadas. (Nota: Requer integração SMTP no servidor para disparo real).")
                 else:
-                    st.warning("Preencha todos os campos.")
-        else:
-            if st.button("Concluir Cadastro", type="primary", use_container_width=True):
-                if email_input and senha_input:
-                    try:
-                        verifica = supabase.table("usuarios").select("email").eq("email", email_input).execute()
-                        if len(verifica.data) > 0:
-                            st.error("Este e-mail já se encontra registrado.")
-                        else:
-                            novo_user = {
-                                "email": email_input,
-                                "senha": hash_senha(senha_input),
-                                "dados": {"estrategias": {}}
-                            }
-                            supabase.table("usuarios").insert(novo_user).execute()
-                            st.success("Conta criada! Alterne para 'Login' para entrar.")
-                    except Exception as err:
-                        st.error(f"Erro ao salvar cadastro: {err}")
+                    st.warning("Preencha o e-mail.")
+                    
     st.stop()
 
 # ==========================================
@@ -239,7 +260,7 @@ with st.sidebar.expander("🏦 Benchmark Selic", expanded=False):
     meta_mensal = juros_liquido_am * 100
 
 # ==========================================
-# FASE 1: MONTAGEM DO MODELO
+# FASE 1: MONTAGEM DO MODELO E CRONOLOGIA
 # ==========================================
 st.header("📦 Fase 1: Parâmetros e Alvos da Operação")
 
@@ -355,7 +376,7 @@ with tab2:
 st.markdown("---")
 
 # ==========================================
-# FASE 3: SIMULADOR DE PAYOFF E DRE
+# FASE 3: SIMULADOR DE PAYOFF COMPLETO
 # ==========================================
 st.header("🔮 Fase 3: Simulador Patrimonial de Payoff")
 
@@ -433,7 +454,7 @@ c_res3.metric(f"Meta Balizada Selic Projetada", f"{meta_acumulada_projetada:.2f}
 st.markdown("---")
 
 # ==========================================
-# FASE 4: CONSOLIDAÇÃO E SALVAMENTO DE NUVEM (OBRIGATÓRIO)
+# FASE 4: CONSOLIDAÇÃO E SALVAMENTO DE NUVEM
 # ==========================================
 st.header("⏳ Fase 4: Consolidação e Retenção em Nuvem")
 
@@ -442,15 +463,12 @@ with c_btn1:
     if st.button("➕ Consolidar Competência no Histórico de Tabelas", use_container_width=True):
         if qtd > 0:
             competencia_texto = f"{LISTA_MESES[st.session_state['mes_num']-1]}/{st.session_state['ano_num']}"
-            
-            # ATENÇÃO: Salvando todas as variáveis financeiras nas entrelinhas (Colunas Invisíveis começando com "_")
             novo_registro = {
                 "Competência": competencia_texto,
                 "Call Ref.": ticker_call if ticker_call else "-",
                 "Renda Opção Liq.": float(receita_realmente_liquida_call),
                 "Dividendos/JSCP Liq.": float(total_proventos_liquidos),
                 
-                # Payload Oculto para o Extrato Detalhado:
                 "_Strike Call": float(strike_call),
                 "_Premio Bruto Call": float(volume_call),
                 "_Custos B3 e Corretagem Call": float(custos_atrito_call),
@@ -461,6 +479,7 @@ with c_btn1:
             }
             st.session_state['historico_rolagens'].append(novo_registro)
             
+            # Avanço de Cronologia Inteligente
             if st.session_state['mes_num'] == 12:
                 st.session_state['mes_num'] = 1
                 st.session_state['ano_num'] += 1
@@ -515,7 +534,7 @@ with col_save2:
                 st.error(f"Erro ao salvar: {err}")
 
 # ==========================================
-# 5. TABELA DE AUDITORIA INTERATIVA E EXTRATO DETALHADO
+# 5. TABELA DE AUDITORIA INTERATIVA E EXTRATO
 # ==========================================
 if st.session_state['historico_rolagens']:
     st.markdown("---")
@@ -531,7 +550,6 @@ if st.session_state['historico_rolagens']:
             "Call Ref.": st.column_config.TextColumn("Call Ref."),
             "Renda Opção Liq.": st.column_config.NumberColumn("Renda Opção Liq.", format="R$ %.2f"),
             "Dividendos/JSCP Liq.": st.column_config.NumberColumn("Dividendos/JSCP Liq.", format="R$ %.2f"),
-            # Ocultando as colunas de dados profundos da visualização da tabela
             "_Strike Call": None,
             "_Premio Bruto Call": None,
             "_Custos B3 e Corretagem Call": None,
@@ -546,11 +564,8 @@ if st.session_state['historico_rolagens']:
         st.session_state['historico_rolagens'] = df_corrigido.to_dict(orient="records")
         st.rerun()
 
-    # --- NOVO: MÓDULO DE DRILL-DOWN (EXTRATO MENSAL DETALHADO) ---
     st.write("")
     st.subheader("🧾 Extrato Mensal Detalhado")
-    st.markdown("Selecione um mês consolidado acima para auditar todas as receitas, custos operacionais e impostos gerados naquela competência.")
-    
     meses_consolidados_lista = [r["Competência"] for r in st.session_state['historico_rolagens']]
     
     if meses_consolidados_lista:
@@ -558,44 +573,33 @@ if st.session_state['historico_rolagens']:
         dados_mes = next((item for item in st.session_state['historico_rolagens'] if item["Competência"] == mes_extrato), None)
         
         if dados_mes:
-            # Fallback seguro caso o cliente acesse dados antigos que não tinham essas colunas ocultas salvas
-            stk_call = dados_mes.get('_Strike Call', 0.0)
-            prm_bruto = dados_mes.get('_Premio Bruto Call', 0.0)
-            cst_b3_cor = dados_mes.get('_Custos B3 e Corretagem Call', 0.0)
-            ir_call = dados_mes.get('_DARF Retido Call', 0.0)
-            divs = dados_mes.get('_Dividendos Isentos', 0.0)
-            jscp_brt = dados_mes.get('_JSCP Bruto', 0.0)
-            ir_jscp_val = dados_mes.get('_IR JSCP', 0.0)
-            
             c_ext1, c_ext2, c_ext3 = st.columns(3)
             with c_ext1:
-                st.markdown("**📊 Operação de Opções (Derivativos)**")
-                st.write(f"Código Call: **{dados_mes.get('Call Ref.', '-')}**")
-                st.write(f"Strike Call: R$ {stk_call:.2f}")
-                st.write(f"Prêmio Bruto: R$ {prm_bruto:,.2f}")
-                st.write(f"Custos/Corretagem: R$ -{cst_b3_cor:,.2f}")
-                st.write(f"DARF a Pagar (IR): R$ -{ir_call:,.2f}")
+                st.markdown("**📊 Operação de Opções**")
+                st.write(f"Prêmio Bruto: R$ {dados_mes.get('_Premio Bruto Call', 0.0):,.2f}")
+                st.write(f"Custos/Corretagem: R$ -{dados_mes.get('_Custos B3 e Corretagem Call', 0.0):,.2f}")
+                st.write(f"DARF (IR): R$ -{dados_mes.get('_DARF Retido Call', 0.0):,.2f}")
                 st.info(f"**Líquido Opção:** R$ {dados_mes.get('Renda Opção Liq.', 0.0):,.2f}")
                 
             with c_ext2:
-                st.markdown("**💰 Eventos Corporativos (Proventos)**")
-                st.write(f"Dividendos Isentos: R$ {divs:,.2f}")
-                st.write(f"JSCP Bruto Declarado: R$ {jscp_brt:,.2f}")
-                st.write(f"IR Retido na Fonte (JSCP): R$ -{ir_jscp_val:,.2f}")
+                st.markdown("**💰 Eventos Corporativos**")
+                st.write(f"Dividendos Isentos: R$ {dados_mes.get('_Dividendos Isentos', 0.0):,.2f}")
+                st.write(f"JSCP Bruto: R$ {dados_mes.get('_JSCP Bruto', 0.0):,.2f}")
+                st.write(f"IR Retido (JSCP): R$ -{dados_mes.get('_IR JSCP', 0.0):,.2f}")
                 st.info(f"**Líquido Proventos:** R$ {dados_mes.get('Dividendos/JSCP Liq.', 0.0):,.2f}")
                 
             with c_ext3:
-                st.markdown("**🧾 Fechamento Consolidado do Mês**")
-                caixa_bruto_total = prm_bruto + divs + jscp_brt
-                total_retencoes = cst_b3_cor + ir_call + ir_jscp_val
+                st.markdown("**🧾 Fechamento Consolidado**")
+                caixa_bruto_total = dados_mes.get('_Premio Bruto Call', 0.0) + dados_mes.get('_Dividendos Isentos', 0.0) + dados_mes.get('_JSCP Bruto', 0.0)
+                total_retencoes = dados_mes.get('_Custos B3 e Corretagem Call', 0.0) + dados_mes.get('_DARF Retido Call', 0.0) + dados_mes.get('_IR JSCP', 0.0)
                 caixa_liquido_total = caixa_bruto_total - total_retencoes
                 
-                st.write(f"Total Bruto Capturado: R$ {caixa_bruto_total:,.2f}")
-                st.write(f"Total Custos e Tributos: R$ -{total_retencoes:,.2f}")
+                st.write(f"Total Bruto: R$ {caixa_bruto_total:,.2f}")
+                st.write(f"Total Custos/Tributos: R$ -{total_retencoes:,.2f}")
                 st.success(f"**Caixa Real Gerado:** R$ {caixa_liquido_total:,.2f}")
 
 # ==========================================
-# 6. PAINEL COMPARATIVO DE PERFORMANCE E TRIBUTAÇÃO
+# 6. PAINEL COMPARATIVO DE PERFORMANCE
 # ==========================================
 st.markdown("---")
 st.subheader("🏆 Painel Comparativo de Performance Absoluta")
