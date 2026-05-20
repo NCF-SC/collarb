@@ -2,6 +2,7 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import datetime
+import requests
 from supabase import create_client, Client
 
 # ==========================================
@@ -9,7 +10,6 @@ from supabase import create_client, Client
 # ==========================================
 st.set_page_config(page_title="Gouldian Invest", page_icon="🦅", layout="wide")
 
-# CSS Corrigido: Esconde a marca do Streamlit, mas MANTER o botão da barra lateral (Sidebar) visível
 REMOVER_BRANDING_CSS = """
     <style>
     #MainMenu {visibility: hidden;}
@@ -51,6 +51,7 @@ def inicializar_estrategia_vazia():
     st.session_state['val_premio_call'] = None
     st.session_state['val_dividendos'] = None
     st.session_state['val_jscp'] = None
+    st.session_state['val_data_vencimento'] = datetime.date.today() + datetime.timedelta(days=21)
 
 def carregar_estrategia_salva(nome, pkg):
     st.session_state['nome_estrategia_atual'] = nome
@@ -66,6 +67,44 @@ def carregar_estrategia_salva(nome, pkg):
     st.session_state['val_premio_call'] = pkg.get('premio_call', None)
     st.session_state['val_dividendos'] = pkg.get('dividendos', None)
     st.session_state['val_jscp'] = pkg.get('jscp', None)
+    st.session_state['val_data_vencimento'] = datetime.date.today() + datetime.timedelta(days=21)
+
+# --- MOTOR DE BUSCA INSTITUCIONAL (BRAPI) ---
+def buscar_dados_opcao_brapi(ticker):
+    """
+    Conecta à API oficial da BrAPI para extrair Preço, Strike e Vencimento exatos da B3.
+    """
+    if not ticker:
+        return None
+        
+    token = st.secrets.get("BRAPI_TOKEN", "")
+    if not token:
+        st.warning("⚠️ O Token da BrAPI não foi configurado nas configurações (Secrets).")
+        return None
+        
+    # Endpoint oficial da cotação
+    url = f"https://brapi.dev/api/quote/{ticker.upper()}?token={token}"
+    
+    try:
+        response = requests.get(url, timeout=10)
+        data = response.json()
+        
+        if "results" in data and len(data["results"]) > 0:
+            ativo = data["results"][0]
+            
+            preco = ativo.get("regularMarketPrice", 0.0)
+            strike = ativo.get("strikePrice", 0.0)
+            vencimento_str = ativo.get("expirationDate", "")
+            
+            vencimento_date = None
+            if vencimento_str:
+                # O formato devolvido é ISO: "2026-06-19T00:00:00.000Z"
+                vencimento_date = datetime.datetime.strptime(vencimento_str[:10], "%Y-%m-%d").date()
+                
+            return {"preco": preco, "strike": strike, "vencimento": vencimento_date}
+        return None
+    except Exception as e:
+        return None
 
 # ==========================================
 # 1. CONTROLE DE AMBIENTE E SUPABASE AUTH
@@ -169,6 +208,9 @@ if not st.session_state['logged_in']:
 # ==========================================
 # 2. SEÇÃO DE PERFIL E GERENCIAMENTO
 # ==========================================
+if 'val_data_vencimento' not in st.session_state:
+    st.session_state['val_data_vencimento'] = datetime.date.today() + datetime.timedelta(days=21)
+
 with st.container():
     c_header1, c_header2 = st.columns([8, 2])
     with c_header1:
@@ -218,7 +260,7 @@ caixa_total_gerado = caixa_acumulado_calls + caixa_proventos
 # ==========================================
 # 3. BARRA LATERAL (MONITOR E CUSTOS)
 # ==========================================
-st.sidebar.image("https://cdn-icons-png.flaticon.com/512/2942/2942259.png", width=50) # Ícone decorativo genérico
+st.sidebar.image("https://cdn-icons-png.flaticon.com/512/2942/2942259.png", width=50) 
 st.sidebar.header("🔍 Monitor de Cotação")
 ticker_acao = st.sidebar.text_input("Ticker da Ação", value="", placeholder="Ex: PETR4.SA", help="Adicione .SA para ativos brasileiros")
 st.sidebar.markdown(f"**Preço de Tela Atual:** R$ {st.session_state['preco_acao_tela']:.2f}")
@@ -279,9 +321,30 @@ with col1:
 with col2:
     with st.container(border=True):
         st.subheader("🛡️ 2. Seguro Longo (Put)")
-        ticker_put = st.text_input("Ticker da Put", value=st.session_state['val_ticker_put'], placeholder="PETRR454")
+        
+        c_put_tick, c_put_btn = st.columns([2, 1])
+        with c_put_tick:
+            ticker_put = st.text_input("Ticker da Put", value=st.session_state['val_ticker_put'], placeholder="PETRR454")
+            st.session_state['val_ticker_put'] = ticker_put
+        with c_put_btn:
+            st.write("")
+            st.write("")
+            if st.button("⚡ Buscar", key="btn_put", use_container_width=True, help="Puxa os dados oficiais da B3 via API BrAPI"):
+                dados_api = buscar_dados_opcao_brapi(ticker_put)
+                if dados_api:
+                    st.session_state['val_preco_put'] = dados_api['preco']
+                    if dados_api['strike'] > 0:
+                        st.session_state['val_strike_put'] = dados_api['strike']
+                    st.toast("✅ Put carregada com sucesso!")
+                    st.rerun()
+                else:
+                    st.toast("Opção não encontrada ou mercado fechado.", icon="❌")
+
         preco_put_raw = st.number_input("Prêmio Pago (R$)", value=st.session_state['val_preco_put'], placeholder="0.00", format="%.2f", help="Custo unitário da opção de venda")
         strike_put_raw = st.number_input("Strike (R$)", value=st.session_state['val_strike_put'], placeholder="0.00", format="%.2f", help="Preço garantido de venda em caso de queda")
+        
+        st.session_state['val_preco_put'] = preco_put_raw
+        st.session_state['val_strike_put'] = strike_put_raw
         
         preco_put = preco_put_raw if preco_put_raw is not None else 0.0
         strike_put = strike_put_raw if strike_put_raw is not None else 0.0
@@ -324,10 +387,35 @@ with tab1:
     with st.container(border=True):
         col4, col5 = st.columns([1, 1.5])
         with col4:
-            ticker_call = st.text_input("Ticker da Call Lançada", value=st.session_state['val_ticker_call'], placeholder="PETRF54")
-            data_vencimento = st.date_input("🗓️ Data de Vencimento", value=data_montagem + datetime.timedelta(days=21), format="DD/MM/YYYY", help="Usado para calcular a Selic exata em dias úteis.")
+            
+            c_call_tick, c_call_btn = st.columns([2, 1])
+            with c_call_tick:
+                ticker_call = st.text_input("Ticker da Call Lançada", value=st.session_state['val_ticker_call'], placeholder="PETRF54")
+                st.session_state['val_ticker_call'] = ticker_call
+            with c_call_btn:
+                st.write("")
+                st.write("")
+                if st.button("⚡ Buscar", key="btn_call", use_container_width=True, help="Puxa os dados oficiais da B3 via API BrAPI"):
+                    dados_api = buscar_dados_opcao_brapi(ticker_call)
+                    if dados_api:
+                        st.session_state['val_premio_call'] = dados_api['preco']
+                        if dados_api['strike'] > 0:
+                            st.session_state['val_strike_call'] = dados_api['strike']
+                        if dados_api['vencimento']:
+                            st.session_state['val_data_vencimento'] = dados_api['vencimento']
+                        st.toast("✅ Call sincronizada com sucesso!")
+                        st.rerun()
+                    else:
+                        st.toast("Opção não encontrada ou mercado fechado.", icon="❌")
+
+            data_vencimento = st.date_input("🗓️ Data de Vencimento", value=st.session_state['val_data_vencimento'], format="DD/MM/YYYY", help="Atualizado automaticamente pela API da B3.", key="input_venc")
+            st.session_state['val_data_vencimento'] = data_vencimento
+            
             strike_call_raw = st.number_input("Strike da Call (R$)", value=st.session_state['val_strike_call'], placeholder="0.00", format="%.2f")
             premio_call_raw = st.number_input("Prêmio Recebido (R$)", value=st.session_state['val_premio_call'], placeholder="0.00", format="%.2f")
+            
+            st.session_state['val_strike_call'] = strike_call_raw
+            st.session_state['val_premio_call'] = premio_call_raw
             
             strike_call = strike_call_raw if strike_call_raw is not None else 0.0
             premio_call = premio_call_raw if premio_call_raw is not None else 0.0
