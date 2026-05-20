@@ -66,51 +66,86 @@ def carregar_estrategia_salva(nome, pkg):
     st.session_state['val_jscp'] = pkg.get('jscp', None)
     st.session_state['val_data_vencimento'] = datetime.date.today() + datetime.timedelta(days=21)
 
-# --- MOTOR DE BUSCA INSTITUCIONAL (BRAPI) COM DIAGNÓSTICO ---
-def buscar_dados_opcao_brapi(ticker):
-    if not ticker:
+# ==========================================
+# MOTOR DE BUSCA DE OPCOES VIA YFINANCE (B3)
+# ==========================================
+def extrair_ativo_base(ticker_opcao):
+    """
+    Extrai o ticker da ação base a partir do ticker da opção.
+    Ex: PETRH460 -> PETR4, VALEF320 -> VALE3
+    Tenta sufixos comuns da B3: 3, 4, 11, 34
+    """
+    codigo = ticker_opcao.upper().strip()
+    base = codigo[:4]
+    for sufixo in ["4", "3", "11", "34"]:
+        ticker_base = f"{base}{sufixo}.SA"
+        try:
+            t = yf.Ticker(ticker_base)
+            info = t.fast_info
+            if info.last_price and info.last_price > 0:
+                return ticker_base
+        except:
+            continue
+    return f"{base}4.SA"  # fallback padrão
+
+def buscar_dados_opcao(ticker_opcao):
+    """
+    Busca dados de opções via yfinance usando o ticker da opção da B3.
+    O usuário digita ex: PETRH460 (Call) ou PETRR440 (Put)
+    A função detecta automaticamente o ativo base e varre a cadeia de opções.
+    """
+    if not ticker_opcao:
         return None
 
-    token = st.secrets.get("BRAPI_TOKEN", "")
-    if not token:
-        st.error("🚨 ERRO: O sistema não encontrou o BRAPI_TOKEN nos Secrets do Streamlit.")
-        return None
+    ticker_upper = ticker_opcao.upper().strip()
 
-    url = f"https://brapi.dev/api/quote/{ticker.upper()}?token={token}"
+    with st.spinner(f"Buscando {ticker_upper} na B3..."):
+        try:
+            # Detecta ativo base automaticamente
+            ticker_base_sa = extrair_ativo_base(ticker_upper)
+            acao = yf.Ticker(ticker_base_sa)
 
-    try:
-        response = requests.get(url, timeout=10)
+            vencimentos = acao.options
+            if not vencimentos:
+                st.warning(f"⚠️ Nenhuma cadeia de opções encontrada para {ticker_base_sa}.")
+                return None
 
-        if response.status_code == 401:
-            st.error("🚨 ERRO 401: Token da BrAPI inválido ou não autorizado. Verifique se copiou corretamente.")
+            for data_venc in vencimentos:
+                try:
+                    chain = acao.option_chain(data_venc)
+                except Exception:
+                    continue
+
+                # Busca em Calls
+                calls = chain.calls
+                if not calls.empty:
+                    match = calls[calls['contractSymbol'].str.upper().str.contains(ticker_upper, na=False)]
+                    if not match.empty:
+                        row = match.iloc[0]
+                        preco = float(row.get("lastPrice", 0.0))
+                        strike = float(row.get("strike", 0.0))
+                        venc_date = datetime.datetime.strptime(data_venc, "%Y-%m-%d").date()
+                        st.success(f"✅ Call encontrada: {ticker_upper} | Strike R$ {strike:.2f} | Venc. {venc_date.strftime('%d/%m/%Y')} | Prêmio R$ {preco:.2f}")
+                        return {"preco": preco, "strike": strike, "vencimento": venc_date}
+
+                # Busca em Puts
+                puts = chain.puts
+                if not puts.empty:
+                    match = puts[puts['contractSymbol'].str.upper().str.contains(ticker_upper, na=False)]
+                    if not match.empty:
+                        row = match.iloc[0]
+                        preco = float(row.get("lastPrice", 0.0))
+                        strike = float(row.get("strike", 0.0))
+                        venc_date = datetime.datetime.strptime(data_venc, "%Y-%m-%d").date()
+                        st.success(f"✅ Put encontrada: {ticker_upper} | Strike R$ {strike:.2f} | Venc. {venc_date.strftime('%d/%m/%Y')} | Prêmio R$ {preco:.2f}")
+                        return {"preco": preco, "strike": strike, "vencimento": venc_date}
+
+            st.warning(f"⚠️ Opção '{ticker_upper}' não encontrada nas cadeias de {ticker_base_sa}. Verifique o ticker.")
             return None
-        elif response.status_code == 404:
-            st.warning(f"⚠️ AVISO 404: A API não encontrou nenhuma opção ativa com o ticker '{ticker.upper()}'.")
+
+        except Exception as e:
+            st.error(f"🚨 Erro ao buscar opção: {e}")
             return None
-        elif response.status_code != 200:
-            st.error(f"🚨 ERRO {response.status_code}: Falha de comunicação com o servidor da BrAPI.")
-            return None
-
-        data = response.json()
-
-        if "results" in data and len(data["results"]) > 0:
-            ativo = data["results"][0]
-            preco = ativo.get("regularMarketPrice", 0.0)
-            strike = ativo.get("strikePrice", 0.0)
-            vencimento_str = ativo.get("expirationDate", "")
-
-            vencimento_date = None
-            if vencimento_str:
-                vencimento_date = datetime.datetime.strptime(vencimento_str[:10], "%Y-%m-%d").date()
-
-            return {"preco": preco, "strike": strike, "vencimento": vencimento_date}
-        else:
-            st.warning("⚠️ A API conectou, mas devolveu um resultado vazio para este ticker.")
-            return None
-
-    except requests.exceptions.RequestException as e:
-        st.error(f"🚨 ERRO DE REDE: Sua internet ou o servidor bloqueou o acesso. Detalhe: {e}")
-        return None
 
 # ==========================================
 # 1. CONTROLE DE AMBIENTE E SUPABASE AUTH
@@ -335,13 +370,12 @@ with col2:
         with c_put_btn:
             st.write("")
             st.write("")
-            if st.button("⚡ Buscar", key="btn_put", use_container_width=True, help="Puxa os dados oficiais da B3 via API BrAPI"):
-                dados_api = buscar_dados_opcao_brapi(ticker_put)
+            if st.button("⚡ Buscar", key="btn_put", use_container_width=True, help="Busca dados da B3 via yfinance"):
+                dados_api = buscar_dados_opcao(ticker_put)
                 if dados_api:
                     st.session_state['val_preco_put'] = dados_api['preco']
                     if dados_api['strike'] > 0:
                         st.session_state['val_strike_put'] = dados_api['strike']
-                    st.toast("✅ Put carregada com sucesso!")
                     st.rerun()
 
         preco_put_raw = st.number_input("Prêmio Pago (R$)", value=st.session_state['val_preco_put'], placeholder="0.00", format="%.2f", help="Custo unitário da opção de venda")
@@ -393,23 +427,22 @@ with tab1:
         with col4:
             c_call_tick, c_call_btn = st.columns([2, 1])
             with c_call_tick:
-                ticker_call = st.text_input("Ticker da Call Lançada", value=st.session_state['val_ticker_call'], placeholder="PETRF54")
+                ticker_call = st.text_input("Ticker da Call Lançada", value=st.session_state['val_ticker_call'], placeholder="PETRF460")
                 st.session_state['val_ticker_call'] = ticker_call
             with c_call_btn:
                 st.write("")
                 st.write("")
-                if st.button("⚡ Buscar", key="btn_call", use_container_width=True, help="Puxa os dados oficiais da B3 via API BrAPI"):
-                    dados_api = buscar_dados_opcao_brapi(ticker_call)
+                if st.button("⚡ Buscar", key="btn_call", use_container_width=True, help="Busca dados da B3 via yfinance"):
+                    dados_api = buscar_dados_opcao(ticker_call)
                     if dados_api:
                         st.session_state['val_premio_call'] = dados_api['preco']
                         if dados_api['strike'] > 0:
                             st.session_state['val_strike_call'] = dados_api['strike']
                         if dados_api['vencimento']:
                             st.session_state['val_data_vencimento'] = dados_api['vencimento']
-                        st.toast("✅ Call sincronizada com sucesso!")
                         st.rerun()
 
-            data_vencimento = st.date_input("🗓️ Data de Vencimento", value=st.session_state['val_data_vencimento'], format="DD/MM/YYYY", help="Atualizado automaticamente pela API da B3.", key="input_venc")
+            data_vencimento = st.date_input("🗓️ Data de Vencimento", value=st.session_state['val_data_vencimento'], format="DD/MM/YYYY", help="Atualizado automaticamente pela busca.", key="input_venc")
             st.session_state['val_data_vencimento'] = data_vencimento
 
             strike_call_raw = st.number_input("Strike da Call (R$)", value=st.session_state['val_strike_call'], placeholder="0.00", format="%.2f")
