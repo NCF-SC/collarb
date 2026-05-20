@@ -90,7 +90,6 @@ if "access_token" in st.query_params and not st.session_state['logged_in']:
             st.session_state['username'] = email_logado.split('@')[0].capitalize()
             st.session_state['user_email_completo'] = email_logado
             
-            # Busca as estratégias salvas do usuário na tabela
             db_res = supabase.table("usuarios").select("*").eq("email", email_logado).execute()
             if len(db_res.data) > 0:
                 st.session_state['dados_nuvem'] = db_res.data[0].get("dados", {"estrategias": {}})
@@ -125,7 +124,6 @@ if not st.session_state['logged_in']:
                             st.session_state['logged_in'] = True
                             st.session_state['username'] = email_input.split('@')[0].capitalize()
                             st.session_state['user_email_completo'] = email_input
-                            # Salva o token na URL para refresh
                             st.query_params["access_token"] = auth_response.session.access_token
                             
                             db_res = supabase.table("usuarios").select("*").eq("email", email_input).execute()
@@ -133,13 +131,18 @@ if not st.session_state['logged_in']:
                                 st.session_state['dados_nuvem'] = db_res.data[0].get("dados", {"estrategias": {}})
                             else:
                                 st.session_state['dados_nuvem'] = {"estrategias": {}}
-                                supabase.table("usuarios").insert({"email": email_input, "dados": st.session_state['dados_nuvem']}).execute()
+                                # Inserindo a senha fake para evitar bloqueio do Supabase Database (Not Null Constraint)
+                                supabase.table("usuarios").insert({
+                                    "email": email_input,
+                                    "senha": "auth_nativa_supabase", 
+                                    "dados": st.session_state['dados_nuvem']
+                                }).execute()
                             
                             st.session_state['projeto_index'] = 0
                             inicializar_estrategia_vazia()
                             st.rerun()
                         except Exception as err:
-                            st.error(f"Erro de autenticação. Verifique e-mail e senha ou se a conta foi confirmada.")
+                            st.error("Erro de autenticação. Verifique e-mail e senha ou se a conta foi confirmada.")
                     else:
                         st.warning("Preencha todos os campos.")
             
@@ -150,11 +153,16 @@ if not st.session_state['logged_in']:
                             # CADASTRO NATIVO SUPABASE
                             auth_response = supabase.auth.sign_up({"email": email_input, "password": senha_input})
                             
-                            # Cria o espaço do usuário no banco de dados para salvar estratégias
                             st.session_state['dados_nuvem'] = {"estrategias": {}}
-                            supabase.table("usuarios").insert({"email": email_input, "dados": st.session_state['dados_nuvem']}).execute()
                             
-                            st.success("✅ Conta criada com sucesso! Verifique seu e-mail para validar a conta, ou tente fazer login direto (dependendo das configurações do seu projeto).")
+                            # Inserindo a senha fake para evitar bloqueio do Supabase Database
+                            supabase.table("usuarios").insert({
+                                "email": email_input,
+                                "senha": "auth_nativa_supabase",
+                                "dados": st.session_state['dados_nuvem']
+                            }).execute()
+                            
+                            st.success("✅ Conta criada com sucesso! Verifique seu e-mail para validar a conta (se configurado), ou faça login para entrar.")
                         except Exception as err:
                             st.error(f"Erro ao criar conta (a senha deve ter no mínimo 6 caracteres). Detalhes: {err}")
         
@@ -167,7 +175,7 @@ if not st.session_state['logged_in']:
                         supabase.auth.reset_password_for_email(email_rec, options={"redirect_to": "https://calculadoracollarb.streamlit.app/"})
                         st.success("📩 Instruções enviadas! Verifique sua caixa de entrada ou spam.")
                     except Exception as err:
-                        st.error(f"Erro ao solicitar recuperação. Tente novamente.")
+                        st.error("Erro ao solicitar recuperação. Tente novamente.")
                 else:
                     st.warning("Preencha o e-mail.")
                     
@@ -465,6 +473,7 @@ with c_btn1:
                 "Call Ref.": ticker_call if ticker_call else "-",
                 "Renda Opção Liq.": float(receita_realmente_liquida_call),
                 "Dividendos/JSCP Liq.": float(total_proventos_liquidos),
+                
                 "_Strike Call": float(strike_call),
                 "_Premio Bruto Call": float(volume_call),
                 "_Custos B3 e Corretagem Call": float(custos_atrito_call),
