@@ -2,7 +2,6 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import datetime
-import hashlib
 from supabase import create_client, Client
 
 # ==========================================
@@ -35,9 +34,6 @@ except Exception as e:
     st.error("Erro na conexão segura de dados. Atualize a página.")
     st.stop()
 
-def hash_senha(senha):
-    return hashlib.sha256(senha.encode()).hexdigest()
-
 # ==========================================
 # FUNCTIONS DE GERENCIAMENTO DE ESTADOS (ANTI-QUEBRA)
 # ==========================================
@@ -58,7 +54,6 @@ def inicializar_estrategia_vazia():
     st.session_state['val_jscp'] = None
 
 def carregar_estrategia_salva(nome, pkg):
-    # Uso de .get() garante que código novo não quebre projetos velhos
     st.session_state['nome_estrategia_atual'] = nome
     st.session_state['historico_rolagens'] = pkg.get('historico_rolagens', [])
     st.session_state['mes_num'] = pkg.get('mes_num', datetime.date.today().month)
@@ -75,7 +70,7 @@ def carregar_estrategia_salva(nome, pkg):
     st.session_state['val_jscp'] = pkg.get('jscp', None)
 
 # ==========================================
-# 1. CONTROLE DE AMBIENTE E LOGIN DE SESSÃO
+# 1. CONTROLE DE AMBIENTE E SUPABASE AUTH
 # ==========================================
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
@@ -84,18 +79,24 @@ if 'username' not in st.session_state:
 if 'preco_acao_tela' not in st.session_state:
     st.session_state['preco_acao_tela'] = 0.0
 
-if "session_token" in st.query_params and not st.session_state['logged_in']:
-    token_email = st.query_params["session_token"]
+# PERSISTÊNCIA DE LOGIN SEGURA VIA TOKEN JWT
+if "access_token" in st.query_params and not st.session_state['logged_in']:
+    token_jwt = st.query_params["access_token"]
     try:
-        resposta_auto = supabase.table("usuarios").select("*").eq("email", token_email).execute()
-        if len(resposta_auto.data) > 0:
-            user_db = resposta_auto.data[0]
+        user_auth = supabase.auth.get_user(token_jwt)
+        if user_auth and user_auth.user:
+            email_logado = user_auth.user.email
             st.session_state['logged_in'] = True
-            st.session_state['username'] = token_email.split('@')[0].capitalize()
-            st.session_state['user_email_completo'] = token_email
-            st.session_state['dados_nuvem'] = user_db.get("dados", {})
-            if "estrategias" not in st.session_state['dados_nuvem']:
-                st.session_state['dados_nuvem']["estrategias"] = {}
+            st.session_state['username'] = email_logado.split('@')[0].capitalize()
+            st.session_state['user_email_completo'] = email_logado
+            
+            # Busca as estratégias salvas do usuário na tabela
+            db_res = supabase.table("usuarios").select("*").eq("email", email_logado).execute()
+            if len(db_res.data) > 0:
+                st.session_state['dados_nuvem'] = db_res.data[0].get("dados", {"estrategias": {}})
+            else:
+                st.session_state['dados_nuvem'] = {"estrategias": {}}
+                
             st.session_state['projeto_index'] = 0
             inicializar_estrategia_vazia()
     except:
@@ -117,68 +118,56 @@ if not st.session_state['logged_in']:
             if modo == "Login":
                 if st.button("Entrar no Sistema", type="primary", use_container_width=True):
                     if email_input and senha_input:
-                        senha_criptografada = hash_senha(senha_input)
                         try:
-                            resposta = supabase.table("usuarios").select("*").eq("email", email_input).execute()
-                            if len(resposta.data) > 0:
-                                user_db = resposta.data[0]
-                                if user_db["senha"] == senha_criptografada:
-                                    st.session_state['logged_in'] = True
-                                    st.session_state['username'] = email_input.split('@')[0].capitalize()
-                                    st.session_state['user_email_completo'] = email_input
-                                    st.query_params["session_token"] = email_input
-                                    
-                                    st.session_state['dados_nuvem'] = user_db.get("dados", {})
-                                    if "estrategias" not in st.session_state['dados_nuvem']:
-                                        st.session_state['dados_nuvem']["estrategias"] = {}
-                                    
-                                    st.session_state['projeto_index'] = 0
-                                    inicializar_estrategia_vazia()
-                                    st.rerun()
-                                else:
-                                    st.error("Senha incorreta.")
+                            # LOGIN NATIVO SUPABASE
+                            auth_response = supabase.auth.sign_in_with_password({"email": email_input, "password": senha_input})
+                            
+                            st.session_state['logged_in'] = True
+                            st.session_state['username'] = email_input.split('@')[0].capitalize()
+                            st.session_state['user_email_completo'] = email_input
+                            # Salva o token na URL para refresh
+                            st.query_params["access_token"] = auth_response.session.access_token
+                            
+                            db_res = supabase.table("usuarios").select("*").eq("email", email_input).execute()
+                            if len(db_res.data) > 0:
+                                st.session_state['dados_nuvem'] = db_res.data[0].get("dados", {"estrategias": {}})
                             else:
-                                st.error("Usuário não cadastrado.")
+                                st.session_state['dados_nuvem'] = {"estrategias": {}}
+                                supabase.table("usuarios").insert({"email": email_input, "dados": st.session_state['dados_nuvem']}).execute()
+                            
+                            st.session_state['projeto_index'] = 0
+                            inicializar_estrategia_vazia()
+                            st.rerun()
                         except Exception as err:
-                            st.error(f"Erro de autenticação: {err}")
+                            st.error(f"Erro de autenticação. Verifique e-mail e senha ou se a conta foi confirmada.")
                     else:
                         st.warning("Preencha todos os campos.")
             
             elif modo == "Criar Conta":
-                if st.button("Concluir Cadastro e Entrar", type="primary", use_container_width=True):
+                if st.button("Concluir Cadastro", type="primary", use_container_width=True):
                     if email_input and senha_input:
                         try:
-                            verifica = supabase.table("usuarios").select("email").eq("email", email_input).execute()
-                            if len(verifica.data) > 0:
-                                st.error("Este e-mail já se encontra registrado.")
-                            else:
-                                # Cria usuário
-                                novo_user = {
-                                    "email": email_input,
-                                    "senha": hash_senha(senha_input),
-                                    "dados": {"estrategias": {}}
-                                }
-                                supabase.table("usuarios").insert(novo_user).execute()
-                                
-                                # Auto-Login automático imediato
-                                st.session_state['logged_in'] = True
-                                st.session_state['username'] = email_input.split('@')[0].capitalize()
-                                st.session_state['user_email_completo'] = email_input
-                                st.query_params["session_token"] = email_input
-                                st.session_state['dados_nuvem'] = {"estrategias": {}}
-                                st.session_state['projeto_index'] = 0
-                                inicializar_estrategia_vazia()
-                                
-                                # Nota mental: Backend deve ser configurado com SMTP para o disparo de boas-vindas
-                                st.rerun()
+                            # CADASTRO NATIVO SUPABASE
+                            auth_response = supabase.auth.sign_up({"email": email_input, "password": senha_input})
+                            
+                            # Cria o espaço do usuário no banco de dados para salvar estratégias
+                            st.session_state['dados_nuvem'] = {"estrategias": {}}
+                            supabase.table("usuarios").insert({"email": email_input, "dados": st.session_state['dados_nuvem']}).execute()
+                            
+                            st.success("✅ Conta criada com sucesso! Verifique seu e-mail para validar a conta, ou tente fazer login direto (dependendo das configurações do seu projeto).")
                         except Exception as err:
-                            st.error(f"Erro ao salvar cadastro: {err}")
+                            st.error(f"Erro ao criar conta (a senha deve ter no mínimo 6 caracteres). Detalhes: {err}")
         
         elif modo == "Esqueci a Senha":
             email_rec = st.text_input("E-mail de recuperação").strip().lower()
             if st.button("Enviar link de recuperação", type="primary", use_container_width=True):
                 if email_rec:
-                    st.success("📩 Se o e-mail estiver cadastrado, as instruções foram enviadas. (Nota: Requer integração SMTP no servidor para disparo real).")
+                    try:
+                        # DISPARO DE EMAIL DE RECUPERAÇÃO NATIVO
+                        supabase.auth.reset_password_for_email(email_rec, options={"redirect_to": "https://calculadoracollarb.streamlit.app/"})
+                        st.success("📩 Instruções enviadas! Verifique sua caixa de entrada ou spam.")
+                    except Exception as err:
+                        st.error(f"Erro ao solicitar recuperação. Tente novamente.")
                 else:
                     st.warning("Preencha o e-mail.")
                     
@@ -188,7 +177,7 @@ if not st.session_state['logged_in']:
 # 2. SEÇÃO DE PERFIL E GERENCIAMENTO DE PROJETOS (LOADER)
 # ==========================================
 st.title("Gouldian Invest | Gestão de Collar Dinâmico")
-st.write(f"Sessão Ativa: **{st.session_state['username']}** | Conexão Segura 🛡️")
+st.write(f"Sessão Ativa: **{st.session_state['username']}** | Conexão Segura e Criptografada 🛡️")
 
 with st.expander("👤 Meu Perfil & Estratégias Salvas", expanded=True):
     dict_estrategias = st.session_state['dados_nuvem'].get("estrategias", {})
@@ -209,6 +198,13 @@ with st.expander("👤 Meu Perfil & Estratégias Salvas", expanded=True):
         st.rerun()
 
 st.markdown("---")
+
+col_top1, col_top2 = st.columns([8, 2])
+if col_top2.button("Sair da Conta (Logout)", use_container_width=True):
+    supabase.auth.sign_out()
+    st.session_state['logged_in'] = False
+    st.query_params.clear()
+    st.rerun()
 
 # ==========================================
 # RECALCULO DINÂMICO DOS ACUMULADOS
@@ -463,12 +459,12 @@ with c_btn1:
     if st.button("➕ Consolidar Competência no Histórico de Tabelas", use_container_width=True):
         if qtd > 0:
             competencia_texto = f"{LISTA_MESES[st.session_state['mes_num']-1]}/{st.session_state['ano_num']}"
+            
             novo_registro = {
                 "Competência": competencia_texto,
                 "Call Ref.": ticker_call if ticker_call else "-",
                 "Renda Opção Liq.": float(receita_realmente_liquida_call),
                 "Dividendos/JSCP Liq.": float(total_proventos_liquidos),
-                
                 "_Strike Call": float(strike_call),
                 "_Premio Bruto Call": float(volume_call),
                 "_Custos B3 e Corretagem Call": float(custos_atrito_call),
