@@ -5,7 +5,9 @@ import datetime
 import requests
 from supabase import create_client, Client
 
-# ---------- 0. CONFIGURAÇÃO VISUAL (WHITE-LABEL) ----------
+# ==========================================
+# 0. CONFIGURAÇÃO VISUAL COMPLETA (WHITE-LABEL)
+# ==========================================
 st.set_page_config(page_title="Gouldian Invest", page_icon="🦅", layout="wide")
 
 REMOVER_BRANDING_CSS = """
@@ -29,64 +31,8 @@ except Exception as e:
     st.error("Erro na conexão segura de dados. Atualize a página.")
     st.stop()
 
-# ---------- FUNÇÃO ATUALIZADA PARA OPLAB ----------
-def buscar_dados_opcao_oplab(ticker: str):
-    """
-    Busca dados de UMA opção específica na Oplab API v3.
-    """
-    if not ticker:
-        return None
-
-    token = st.secrets.get("OPLAB_TOKEN", "")
-    if not token:
-        st.error("🚨 OPLAB_TOKEN não encontrado nos Secrets.")
-        return None
-
-    # Endpoint padrão da Oplab para cotação de opção (ajuste se a rota for diferente)
-    url = f"https://api.oplab.com.br/v3/options/{ticker.upper()}"
-    
-    headers = {
-        "Access-Token": token,
-        "Content-Type": "application/json"
-    }
-
-    try:
-        r = requests.get(url, headers=headers, timeout=10)
-        if r.status_code != 200:
-            st.error(f"Oplab respondeu {r.status_code}: {r.text[:200]}")
-            return None
-
-        data = r.json()
-        
-        # A Oplab costuma retornar os dados dentro de uma chave 'data' ou direto no root
-        option = data.get("data", data)
-        
-        if not option:
-            st.warning("A Oplab não devolveu dados para esse ticker.")
-            return None
-
-        # MAPEAMENTO DE CAMPOS (Ajuste as chaves abaixo se a API retornar nomes diferentes)
-        # Tentamos múltiplos nomes comuns para garantir compatibilidade
-        preco = option.get("price") or option.get("last_price") or option.get("preco") or 0.0
-        strike = option.get("strike") or option.get("strike_price") or option.get("strike_put") or 0.0
-        venc_raw = option.get("expiration_date") or option.get("expirationDate") or option.get("vencimento")
-
-        vencimento_dt = None
-        if venc_raw:
-            vencimento_dt = datetime.datetime.strptime(venc_raw[:10], "%Y-%m-%d").date()
-
-        return {
-            "preco": float(preco),
-            "strike": float(strike),
-            "vencimento": vencimento_dt
-        }
-
-    except Exception as e:
-        st.error(f"Erro ao consultar Oplab: {e}")
-        return None
-
 # ==========================================
-# FUNCTIONS DE GERENCIAMENTO DE ESTADOS
+# FUNCTIONS DE GERENCIAMENTO DE ESTADOS (ANTI-QUEBRA)
 # ==========================================
 def inicializar_estrategia_vazia():
     st.session_state['nome_estrategia_atual'] = ""
@@ -119,6 +65,52 @@ def carregar_estrategia_salva(nome, pkg):
     st.session_state['val_dividendos'] = pkg.get('dividendos', None)
     st.session_state['val_jscp'] = pkg.get('jscp', None)
     st.session_state['val_data_vencimento'] = datetime.date.today() + datetime.timedelta(days=21)
+
+# --- MOTOR DE BUSCA INSTITUCIONAL (BRAPI) COM DIAGNÓSTICO ---
+def buscar_dados_opcao_brapi(ticker):
+    if not ticker:
+        return None
+
+    token = st.secrets.get("BRAPI_TOKEN", "")
+    if not token:
+        st.error("🚨 ERRO: O sistema não encontrou o BRAPI_TOKEN nos Secrets do Streamlit.")
+        return None
+
+    url = f"https://brapi.dev/api/quote/{ticker.upper()}?token={token}"
+
+    try:
+        response = requests.get(url, timeout=10)
+
+        if response.status_code == 401:
+            st.error("🚨 ERRO 401: Token da BrAPI inválido ou não autorizado. Verifique se copiou corretamente.")
+            return None
+        elif response.status_code == 404:
+            st.warning(f"⚠️ AVISO 404: A API não encontrou nenhuma opção ativa com o ticker '{ticker.upper()}'.")
+            return None
+        elif response.status_code != 200:
+            st.error(f"🚨 ERRO {response.status_code}: Falha de comunicação com o servidor da BrAPI.")
+            return None
+
+        data = response.json()
+
+        if "results" in data and len(data["results"]) > 0:
+            ativo = data["results"][0]
+            preco = ativo.get("regularMarketPrice", 0.0)
+            strike = ativo.get("strikePrice", 0.0)
+            vencimento_str = ativo.get("expirationDate", "")
+
+            vencimento_date = None
+            if vencimento_str:
+                vencimento_date = datetime.datetime.strptime(vencimento_str[:10], "%Y-%m-%d").date()
+
+            return {"preco": preco, "strike": strike, "vencimento": vencimento_date}
+        else:
+            st.warning("⚠️ A API conectou, mas devolveu um resultado vazio para este ticker.")
+            return None
+
+    except requests.exceptions.RequestException as e:
+        st.error(f"🚨 ERRO DE REDE: Sua internet ou o servidor bloqueou o acesso. Detalhe: {e}")
+        return None
 
 # ==========================================
 # 1. CONTROLE DE AMBIENTE E SUPABASE AUTH
@@ -343,14 +335,12 @@ with col2:
         with c_put_btn:
             st.write("")
             st.write("")
-            if st.button("⚡ Buscar", key="btn_put", use_container_width=True, help="Puxa os dados oficiais via API Oplab"):
-                dados_api = buscar_dados_opcao_oplab(ticker_put)
+            if st.button("⚡ Buscar", key="btn_put", use_container_width=True, help="Puxa os dados oficiais da B3 via API BrAPI"):
+                dados_api = buscar_dados_opcao_brapi(ticker_put)
                 if dados_api:
                     st.session_state['val_preco_put'] = dados_api['preco']
                     if dados_api['strike'] > 0:
                         st.session_state['val_strike_put'] = dados_api['strike']
-                    if dados_api['vencimento']:
-                        st.session_state['val_data_vencimento'] = dados_api['vencimento']
                     st.toast("✅ Put carregada com sucesso!")
                     st.rerun()
 
@@ -408,8 +398,8 @@ with tab1:
             with c_call_btn:
                 st.write("")
                 st.write("")
-                if st.button("⚡ Buscar", key="btn_call", use_container_width=True, help="Puxa os dados oficiais via API Oplab"):
-                    dados_api = buscar_dados_opcao_oplab(ticker_call)
+                if st.button("⚡ Buscar", key="btn_call", use_container_width=True, help="Puxa os dados oficiais da B3 via API BrAPI"):
+                    dados_api = buscar_dados_opcao_brapi(ticker_call)
                     if dados_api:
                         st.session_state['val_premio_call'] = dados_api['preco']
                         if dados_api['strike'] > 0:
@@ -419,7 +409,7 @@ with tab1:
                         st.toast("✅ Call sincronizada com sucesso!")
                         st.rerun()
 
-            data_vencimento = st.date_input("🗓️ Data de Vencimento", value=st.session_state['val_data_vencimento'], format="DD/MM/YYYY", help="Atualizado automaticamente pela API da Oplab.", key="input_venc")
+            data_vencimento = st.date_input("🗓️ Data de Vencimento", value=st.session_state['val_data_vencimento'], format="DD/MM/YYYY", help="Atualizado automaticamente pela API da B3.", key="input_venc")
             st.session_state['val_data_vencimento'] = data_vencimento
 
             strike_call_raw = st.number_input("Strike da Call (R$)", value=st.session_state['val_strike_call'], placeholder="0.00", format="%.2f")
@@ -504,6 +494,7 @@ with st.container(border=True):
         valor_residual_put_raw = st.number_input("Ação despencou. Qual o valor de revenda da Put na tela? (R$)", value=None, placeholder="Ex: 5.20", format="%.2f")
         valor_residual_put = valor_residual_put_raw if valor_residual_put_raw is not None else 0.0
 
+    receita_venda_put_residual = valor_residual_put * qtd
     deseja_exercer_put = False
 
     if preco_vencimento <= strike_put and strike_put > 0:
