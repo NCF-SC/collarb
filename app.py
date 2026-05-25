@@ -37,23 +37,28 @@ except Exception:
 # MOTOR V2 (BRAPI)
 # ==========================================
 def buscar_dados_opcao_v2(underlying, target_ticker):
-    if not underlying or not target_ticker:
+    # Remove sufixos comuns de corretoras (como .SA) que causam erro 400
+    underlying_clean = underlying.upper().replace(".SA", "")
+    
+    if not underlying_clean or not target_ticker:
         st.warning("Informe o Ativo Base e o Ticker da Opção.")
         return None
 
     headers = {"Authorization": f"Bearer {BRAPI_TOKEN}"}
-    url = f"https://brapi.dev/api/v2/options/chain?underlying={underlying.upper()}"
+    url = f"https://brapi.dev/api/v2/options/chain?underlying={underlying_clean}"
 
     try:
         response = requests.get(url, headers=headers, timeout=10)
+        
         if response.status_code != 200:
-            st.error(f"Erro na API V2: {response.status_code}")
+            # Captura a mensagem de erro da API para diagnóstico
+            error_message = response.text
+            st.error(f"Erro 400 (Bad Request). A API retornou: {error_message}")
             return None
 
         data = response.json()
         series = data.get("series", [])
 
-        # Filtra a série pelo símbolo correto
         opcao = next((item for item in series if item["symbol"] == target_ticker.upper()), None)
         
         if opcao:
@@ -63,12 +68,11 @@ def buscar_dados_opcao_v2(underlying, target_ticker):
                 "vencimento": datetime.datetime.strptime(opcao.get("expirationDate", "2026-01-01"), "%Y-%m-%d").date()
             }
         else:
-            st.warning(f"Ticker {target_ticker} não encontrado na cadeia de {underlying}.")
+            st.warning(f"Ticker {target_ticker} não encontrado na cadeia de {underlying_clean}.")
             return None
     except Exception as e:
         st.error(f"Erro de conexão: {e}")
         return None
-
 # ==========================================
 # FUNÇÕES DE ESTADO
 # ==========================================
