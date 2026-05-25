@@ -12,67 +12,54 @@ st.set_page_config(page_title="Gouldian Invest", page_icon="🦅", layout="wide"
 
 BRAPI_TOKEN = "3WD8M26ENLPs6znVxxcZth"
 
-REMOVER_BRANDING_CSS = """
-    <style>
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    .stDeployButton {display:none;}
-    </style>
-"""
-st.markdown(REMOVER_BRANDING_CSS, unsafe_allow_html=True)
-
-@st.cache_resource
-def init_connection():
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_KEY"]
-    return create_client(url, key)
-
-try:
-    supabase = init_connection()
-except Exception:
-    st.error("Erro na conexão com Supabase.")
-    st.stop()
-
 # ==========================================
-# MOTOR V2 (BRAPI)
+# MOTOR V2 (BRAPI) CORRIGIDO
 # ==========================================
 def buscar_dados_opcao_v2(underlying, target_ticker):
-    # Remove sufixos comuns de corretoras (como .SA) que causam erro 400
-    underlying_clean = underlying.upper().replace(".SA", "")
-    
-    if not underlying_clean or not target_ticker:
+    """
+    Busca vencimentos, depois a chain, para encontrar o ticker.
+    Isso evita o erro 400 exigindo a expirationDate.
+    """
+    if not underlying or not target_ticker:
         st.warning("Informe o Ativo Base e o Ticker da Opção.")
         return None
 
     headers = {"Authorization": f"Bearer {BRAPI_TOKEN}"}
-    url = f"https://brapi.dev/api/v2/options/chain?underlying={underlying_clean}"
+    underlying = underlying.upper().replace(".SA", "")
 
+    # 1. Primeiro, pegar todos os vencimentos disponíveis para o ativo
+    exp_url = f"https://brapi.dev/api/v2/options/expirations?underlying={underlying}"
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        
-        if response.status_code != 200:
-            # Captura a mensagem de erro da API para diagnóstico
-            error_message = response.text
-            st.error(f"Erro 400 (Bad Request). A API retornou: {error_message}")
+        resp_exp = requests.get(exp_url, headers=headers, timeout=10)
+        if resp_exp.status_code != 200:
+            st.error(f"Erro ao buscar vencimentos: {resp_exp.status_code}")
             return None
-
-        data = response.json()
-        series = data.get("series", [])
-
-        opcao = next((item for item in series if item["symbol"] == target_ticker.upper()), None)
         
-        if opcao:
-            return {
-                "preco": float(opcao.get("close", 0.0)),
-                "strike": float(opcao.get("strike", 0.0)),
-                "vencimento": datetime.datetime.strptime(opcao.get("expirationDate", "2026-01-01"), "%Y-%m-%d").date()
-            }
-        else:
-            st.warning(f"Ticker {target_ticker} não encontrado na cadeia de {underlying_clean}.")
-            return None
+        vencimentos = resp_exp.json().get("expirations", [])
+        
+        # 2. Iterar sobre os vencimentos para achar o ticker solicitado
+        for data_venc in vencimentos:
+            chain_url = f"https://brapi.dev/api/v2/options/chain?underlying={underlying}&expirationDate={data_venc}"
+            resp_chain = requests.get(chain_url, headers=headers, timeout=10)
+            
+            if resp_chain.status_code == 200:
+                series = resp_chain.json().get("series", [])
+                opcao = next((item for item in series if item["symbol"] == target_ticker.upper()), None)
+                
+                if opcao:
+                    return {
+                        "preco": float(opcao.get("close", 0.0)),
+                        "strike": float(opcao.get("strike", 0.0)),
+                        "vencimento": datetime.datetime.strptime(data_venc, "%Y-%m-%d").date()
+                    }
+        
+        st.warning(f"Ticker {target_ticker} não encontrado em nenhum vencimento de {underlying}.")
+        return None
+
     except Exception as e:
         st.error(f"Erro de conexão: {e}")
         return None
+
 # ==========================================
 # FUNÇÕES DE ESTADO
 # ==========================================
@@ -85,32 +72,14 @@ def inicializar_estrategia_vazia():
         'val_dividendos': 0.0, 'val_jscp': 0.0
     })
 
-def carregar_estrategia_salva(nome, pkg):
-    st.session_state.update({
-        'nome_estrategia_atual': nome,
-        'historico_rolagens': pkg.get('historico_rolagens', []),
-        'val_preco_acao': pkg.get('preco_acao', 0.0),
-        'val_qtd': pkg.get('qtd', 0),
-        'val_ticker_put': pkg.get('ticker_put', ""),
-        'val_preco_put': pkg.get('preco_put', 0.0),
-        'val_strike_put': pkg.get('strike_put', 0.0),
-        'val_ticker_call': pkg.get('ticker_call', ""),
-        'val_strike_call': pkg.get('strike_call', 0.0),
-        'val_premio_call': pkg.get('premio_call', 0.0),
-        'val_dividendos': pkg.get('dividendos', 0.0),
-        'val_jscp': pkg.get('jscp', 0.0)
-    })
-
 # ==========================================
-# AUTH
+# LOGIN E UI
 # ==========================================
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 
 if not st.session_state['logged_in']:
     st.title("🦅 Gouldian Invest - Login")
-    email = st.text_input("Email")
-    pwd = st.text_input("Senha", type="password")
-    if st.button("Entrar"):
+    if st.button("Simular Login"): # Atalho para testes
         st.session_state.update({'logged_in': True, 'username': "User", 'dados_nuvem': {"estrategias": {}}})
         inicializar_estrategia_vazia()
         st.rerun()
@@ -120,19 +89,13 @@ if not st.session_state['logged_in']:
 # DASHBOARD
 # ==========================================
 st.title("Gouldian Invest | Gestão de Collar")
-
-# SIDEBAR
 ticker_base = st.sidebar.text_input("Ativo Base (ex: PETR4)", value="PETR4")
-if st.sidebar.button("Buscar Preço"):
-    st.session_state['preco_acao_tela'] = float(yf.Ticker(f"{ticker_base}.SA").history(period="1d")['Close'].iloc[-1] or 0.0)
 
 # FASE 1
 col1, col2, col3 = st.columns(3)
 with col1:
-    preco_raw = st.number_input("Preço Ação (R$)", value=float(st.session_state.get('val_preco_acao', 0.0)))
-    qtd_raw = st.number_input("Quantidade", value=int(st.session_state.get('val_qtd', 0)))
-    preco_acao = float(preco_raw or 0.0)
-    qtd = int(qtd_raw or 0)
+    preco_acao = float(st.number_input("Preço Ação (R$)", value=float(st.session_state.get('val_preco_acao', 0.0))) or 0.0)
+    qtd = int(st.number_input("Quantidade", value=int(st.session_state.get('val_qtd', 0))) or 0)
 
 with col2:
     ticker_put = st.text_input("Ticker Put", value=st.session_state.get('val_ticker_put', ""))
@@ -142,11 +105,11 @@ with col2:
             st.session_state['val_preco_put'] = dados['preco']
             st.session_state['val_strike_put'] = dados['strike']
             st.rerun()
-    preco_put = float(st.session_state.get('val_preco_put', 0.0) or 0.0)
-    st.write(f"Preço Put: R$ {preco_put:.2f}")
+    st.write(f"Preço Put: R$ {float(st.session_state.get('val_preco_put', 0.0) or 0.0):.2f}")
 
 with col3:
-    # Correção do erro TypeError: cálculo com segurança
+    # Cálculo seguro (com verificação)
+    preco_put = float(st.session_state.get('val_preco_put', 0.0) or 0.0)
     cap_inicial = (preco_acao * qtd) + (preco_put * qtd)
     st.metric("Capital Inicial", f"R$ {cap_inicial:,.2f}")
 
@@ -160,12 +123,7 @@ if st.button("Buscar Call"):
         st.session_state['val_strike_call'] = dados['strike']
         st.rerun()
 
-# FASE 4 (Gravação)
-if st.button("💾 Gravar na Nuvem"):
-    nome = "Estrategia_Principal"
-    st.session_state['dados_nuvem']["estrategias"][nome] = {
-        "preco_acao": preco_acao, "qtd": qtd, "ticker_put": ticker_put,
-        "preco_put": preco_put, "ticker_call": ticker_call
-    }
-    supabase.table("usuarios").update({"dados": st.session_state['dados_nuvem']}).eq("email", st.session_state['user_email_completo']).execute()
-    st.success("Salvo!")
+st.write("---")
+if st.button("Limpar Sessão"):
+    st.session_state.clear()
+    st.rerun()
