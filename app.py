@@ -74,29 +74,19 @@ def buscar_dados_opcao_brapi(underlying, target_ticker):
 
     token = st.secrets.get("BRAPI_TOKEN", "")
     if not token:
-        st.error("🚨 ERRO: O sistema não encontrou o BRAPI_TOKEN nos Secrets do Streamlit.")
+        st.error("🚨 ERRO: O sistema não encontrou o BRAPI_TOKEN nos Secrets.")
         return None
 
     headers = {"Authorization": f"Bearer {token}"}
     underlying_clean = underlying.upper().replace(".SA", "")
     target_ticker_clean = target_ticker.upper()
 
-    # 1. Pegar todos os vencimentos disponíveis para o ativo
     exp_url = f"https://brapi.dev/api/v2/options/expirations?underlying={underlying_clean}"
-    
     try:
         resp_exp = requests.get(exp_url, headers=headers, timeout=10)
-        
-        if resp_exp.status_code == 401:
-            st.error("🚨 ERRO 401: Token da BrAPI inválido ou não autorizado. Verifique seus secrets.")
-            return None
-        elif resp_exp.status_code != 200:
-            st.error(f"🚨 ERRO ao buscar vencimentos: Status {resp_exp.status_code}")
-            return None
-        
+        if resp_exp.status_code != 200: return None
         vencimentos = resp_exp.json().get("expirations", [])
         
-        # 2. Iterar sobre os vencimentos para achar o ticker solicitado
         for data_venc in vencimentos:
             chain_url = f"https://brapi.dev/api/v2/options/chain?underlying={underlying_clean}&expirationDate={data_venc}"
             resp_chain = requests.get(chain_url, headers=headers, timeout=10)
@@ -111,13 +101,62 @@ def buscar_dados_opcao_brapi(underlying, target_ticker):
                         "strike": float(opcao.get("strike", 0.0)),
                         "vencimento": datetime.datetime.strptime(data_venc, "%Y-%m-%d").date()
                     }
-        
-        st.warning(f"⚠️ AVISO: Ticker '{target_ticker_clean}' não encontrado em nenhum vencimento ativo de '{underlying_clean}'.")
+        st.warning(f"⚠️ Ticker '{target_ticker_clean}' não encontrado nos vencimentos ativos de '{underlying_clean}'.")
+        return None
+    except requests.exceptions.RequestException:
         return None
 
-    except requests.exceptions.RequestException as e:
-        st.error(f"🚨 ERRO DE REDE: Sua internet ou o servidor bloqueou o acesso. Detalhe: {e}")
-        return None
+@st.cache_data(ttl=300) # Cache de 5 min para não estourar limite da API
+def buscar_sugestoes_calls_cached(underlying, strike_minimo):
+    """Busca as Calls mais próximas e imediatamente superiores ao strike de segurança."""
+    if not underlying or strike_minimo <= 0: return []
+    
+    token = st.secrets.get("BRAPI_TOKEN", "")
+    if not token: return []
+    
+    headers = {"Authorization": f"Bearer {token}"}
+    underlying_clean = underlying.upper().replace(".SA", "")
+    
+    try:
+        exp_url = f"https://brapi.dev/api/v2/options/expirations?underlying={underlying_clean}"
+        resp_exp = requests.get(exp_url, headers=headers, timeout=5)
+        if resp_exp.status_code != 200: return []
+        
+        vencimentos = resp_exp.json().get("expirations", [])
+        # Filtra vencimentos que já passaram para evitar distorções
+        venc_validos = [v for v in vencimentos if datetime.datetime.strptime(v, "%Y-%m-%d").date() > datetime.date.today()]
+        if not venc_validos: return []
+        
+        data_venc = venc_validos[0] # Pega o mais próximo
+        chain_url = f"https://brapi.dev/api/v2/options/chain?underlying={underlying_clean}&expirationDate={data_venc}"
+        resp_chain = requests.get(chain_url, headers=headers, timeout=5)
+        if resp_chain.status_code != 200: return []
+        
+        series = resp_chain.json().get("series", [])
+        calls = []
+        for item in series:
+            sym = item.get("symbol", "")
+            # Pela regra B3, a 5ª letra indica o mês de vencimento da Call (A a L)
+            is_call = len(sym) >= 5 and sym[4].upper() in "ABCDEFGHIJKL"
+            
+            if is_call:
+                strike = float(item.get("strike", 0.0))
+                # Filtra apenas strikes que não dão prejuízo no capital base
+                if strike >= strike_minimo:
+                    preco = float(item.get("close", 0.0))
+                    if preco > 0: # Remove opções sem liquidez recente
+                        calls.append({
+                            "Ticker": sym,
+                            "Strike (R$)": strike,
+                            "Prêmio (R$)": preco,
+                            "Vencimento": data_venc
+                        })
+        
+        # Ordena pelo strike mais próximo do mínimo de segurança
+        calls.sort(key=lambda x: x["Strike (R$)"])
+        return calls[:5]
+    except Exception:
+        return []
 
 # ==========================================
 # 1. CONTROLE DE AMBIENTE E SUPABASE AUTH
@@ -315,7 +354,7 @@ st.caption("Configure os parâmetros de entrada e o cronograma do ciclo atual.")
 with st.container(border=True):
     col_cron1, col_cron2, col_vazio_cron = st.columns([2, 2, 4])
     with col_cron1:
-        ciclo_nome_input = st.text_input("🔖 Identificador do Ciclo Atual", value=st.session_state['ciclo_nome'], help="Nome amigável para este ciclo no relatório (Ex: Série Mar/26)")
+        ciclo_nome_input = st.text_input("🔖 Identificador do Ciclo Atual", value=st.session_state['ciclo_nome'])
         st.session_state['ciclo_nome'] = ciclo_nome_input
     with col_cron2:
         data_montagem = st.date_input("🗓️ Data Base (Início/Rolagem)", value=datetime.date.today(), format="DD/MM/YYYY")
@@ -325,7 +364,7 @@ col1, col2, col3 = st.columns(3)
 with col1:
     with st.container(border=True):
         st.subheader("🏢 1. Ativo Base (Ação)")
-        preco_acao_raw = st.number_input("Preço de Aquisição (R$)", value=st.session_state['val_preco_acao'], placeholder="0.00", format="%.2f", help="Preço médio pago pelas ações")
+        preco_acao_raw = st.number_input("Preço de Aquisição (R$)", value=st.session_state['val_preco_acao'], placeholder="0.00", format="%.2f")
         qtd_raw = st.number_input("Quantidade Exposta", value=st.session_state['val_qtd'], placeholder="1000", step=100)
 
         preco_acao = preco_acao_raw if preco_acao_raw is not None else 0.0
@@ -342,8 +381,8 @@ with col2:
         with c_put_btn:
             st.write("")
             st.write("")
-            if st.button("⚡ Buscar", key="btn_put", use_container_width=True, help="Puxa os dados oficiais da B3 via API BrAPI"):
-                dados_api = buscar_dados_opcao_brapi(ticker_acao, ticker_put) # PASSA O TICKER_ACAO AQUI
+            if st.button("⚡ Buscar", key="btn_put", use_container_width=True):
+                dados_api = buscar_dados_opcao_brapi(ticker_acao, ticker_put)
                 if dados_api:
                     st.session_state['val_preco_put'] = dados_api['preco']
                     if dados_api['strike'] > 0:
@@ -351,8 +390,8 @@ with col2:
                     st.toast("✅ Put carregada com sucesso!")
                     st.rerun()
 
-        preco_put_raw = st.number_input("Prêmio Pago (R$)", value=st.session_state['val_preco_put'], placeholder="0.00", format="%.2f", help="Custo unitário da opção de venda")
-        strike_put_raw = st.number_input("Strike (R$)", value=st.session_state['val_strike_put'], placeholder="0.00", format="%.2f", help="Preço garantido de venda em caso de queda")
+        preco_put_raw = st.number_input("Prêmio Pago (R$)", value=st.session_state['val_preco_put'], placeholder="0.00", format="%.2f")
+        strike_put_raw = st.number_input("Strike (R$)", value=st.session_state['val_strike_put'], placeholder="0.00", format="%.2f")
 
         st.session_state['val_preco_put'] = preco_put_raw
         st.session_state['val_strike_put'] = strike_put_raw
@@ -362,7 +401,7 @@ with col2:
 
 # --- Cálculos Base ---
 volume_acao = volume_put = tx_b3_entrada_acao = tx_b3_entrada_put = taxas_iniciais_totais = 0.0
-custo_base_bruto = custo_base_ajustado = strike_minimo = preco_medio_atual = meta_financeira_12m = 0.0
+custo_base_bruto = custo_base_ajustado = strike_minimo = preco_medio_atual = 0.0
 
 if qtd > 0:
     volume_acao = preco_acao * qtd
@@ -375,7 +414,6 @@ if qtd > 0:
     custo_base_bruto = volume_acao + volume_put + taxas_iniciais_totais
     custo_base_ajustado = custo_base_bruto - caixa_total_gerado
     strike_minimo = (custo_base_ajustado / qtd) / (1 - taxa_ex_b3)
-    preco_medio_atual = custo_base_ajustado / qtd
 
 with col3:
     with st.container(border=True):
@@ -390,33 +428,48 @@ st.divider()
 # FASE 2: REMUNERAÇÃO E CRONOLOGIA DE VENCIMENTO
 # ==========================================
 st.header("⚡ Fase 2: Amortização Mensal (Lançamentos)")
-st.caption("Lance as opções de compra e eventos corporativos ocorridos no período.")
 
 tab1, tab2 = st.tabs(["🔄 Lançamento de Call (Venda Coberta)", "💰 Proventos Recebidos (Ativo Base)"])
 
 with tab1:
     with st.container(border=True):
+        
+        # Bloco de Sugestão Automática de Opções Seguras
+        if strike_minimo > 0 and ticker_acao:
+            st.markdown(f"**Referência de Risco:** Strike Mínimo Seguro R$ {strike_minimo:.2f}")
+            sugestoes = buscar_sugestoes_calls_cached(ticker_acao, strike_minimo)
+            if sugestoes:
+                melhor_call = sugestoes[0]
+                st.info(f"💡 **Sugestão Automática (Sem Risco de Exercício no PM):** A opção mais próxima é **{melhor_call['Ticker']}** (Strike R$ {melhor_call['Strike (R$)']:.2f} | R$ {melhor_call['Prêmio (R$)']:.2f})")
+                
+                with st.expander("🔎 Ver outras opções próximas e seguras (Expander)"):
+                    st.dataframe(pd.DataFrame(sugestoes), use_container_width=True)
+            else:
+                st.caption("Aguardando ativos líquidos acima do ponto de equilíbrio na B3.")
+        
+        st.divider()
+
         col4, col5 = st.columns([1, 1.5])
         with col4:
             c_call_tick, c_call_btn = st.columns([2, 1])
             with c_call_tick:
-                ticker_call = st.text_input("Ticker da Call Lançada", value=st.session_state['val_ticker_call'], placeholder="PETRF54")
+                ticker_call = st.text_input("Ticker da Call Lançada", value=st.session_state['val_ticker_call'], placeholder="Ex: PETRF54")
                 st.session_state['val_ticker_call'] = ticker_call
             with c_call_btn:
                 st.write("")
                 st.write("")
-                if st.button("⚡ Buscar", key="btn_call", use_container_width=True, help="Puxa os dados oficiais da B3 via API BrAPI"):
-                    dados_api = buscar_dados_opcao_brapi(ticker_acao, ticker_call) # PASSA O TICKER_ACAO AQUI
+                if st.button("⚡ Buscar", key="btn_call", use_container_width=True):
+                    dados_api = buscar_dados_opcao_brapi(ticker_acao, ticker_call)
                     if dados_api:
                         st.session_state['val_premio_call'] = dados_api['preco']
                         if dados_api['strike'] > 0:
                             st.session_state['val_strike_call'] = dados_api['strike']
                         if dados_api['vencimento']:
                             st.session_state['val_data_vencimento'] = dados_api['vencimento']
-                        st.toast("✅ Call sincronizada com sucesso!")
+                        st.toast("✅ Call sincronizada!")
                         st.rerun()
 
-            data_vencimento = st.date_input("🗓️ Data de Vencimento", value=st.session_state['val_data_vencimento'], format="DD/MM/YYYY", help="Atualizado automaticamente pela API da B3.", key="input_venc")
+            data_vencimento = st.date_input("🗓️ Data de Vencimento", value=st.session_state['val_data_vencimento'], format="DD/MM/YYYY")
             st.session_state['val_data_vencimento'] = data_vencimento
 
             strike_call_raw = st.number_input("Strike da Call (R$)", value=st.session_state['val_strike_call'], placeholder="0.00", format="%.2f")
@@ -428,10 +481,15 @@ with tab1:
             strike_call = strike_call_raw if strike_call_raw is not None else 0.0
             premio_call = premio_call_raw if premio_call_raw is not None else 0.0
 
-        # Matemática dos Dias Úteis
+        # Matemática dos Dias Úteis e Selic Mês Cheio
         dias_uteis = len(pd.bdate_range(data_montagem, data_vencimento))
         dias_uteis = max(1, dias_uteis)
+        
+        # Meta 1: O que a Selic rende APENAS nos dias em que o dinheiro ficou travado
         meta_ciclo_perc = (((1 + juros_liquido_aa) ** (dias_uteis / 252)) - 1) * 100
+        
+        # Meta 2: O que a Selic rende em um mês fiscal padrão fechado (21 dias úteis)
+        meta_mes_cheio_perc = (((1 + juros_liquido_aa) ** (21 / 252)) - 1) * 100
 
         volume_call = premio_call * qtd
         custos_atrito_call = (volume_call * emol_opcao) + (corretagem if corretagem > 0 else 0.0)
@@ -451,10 +509,18 @@ with tab1:
             if premio_call > 0 and custo_base_bruto > 0:
                 rendimento_call_ciclo = (receita_realmente_liquida_call / custo_base_bruto) * 100
                 st.write("")
+                
+                # Validação 1: Rentabilidade Proporcional
                 if rendimento_call_ciclo < meta_ciclo_perc:
-                    st.warning(f"⚠️ **Alerta de Custo de Oportunidade:** Taxa líquida do prêmio (**{rendimento_call_ciclo:.2f}%**) é menor que a Selic do período (**{meta_ciclo_perc:.2f}%**).")
+                    st.warning(f"⚠️ **Alerta de Custo de Oportunidade:** Prêmio líquido (**{rendimento_call_ciclo:.2f}%**) é menor que a Selic proporcional do ciclo (**{meta_ciclo_perc:.2f}%**).")
                 else:
-                    st.success(f"🎯 **Operação Eficiente:** Prêmio líquido (**{rendimento_call_ciclo:.2f}%**) superior à Selic proporcional do ciclo (**{meta_ciclo_perc:.2f}%**).")
+                    st.success(f"🎯 **Operação Eficiente (Proporcional):** Prêmio líquido (**{rendimento_call_ciclo:.2f}%**) superior à Selic proporcional do ciclo (**{meta_ciclo_perc:.2f}%**).")
+
+                # Validação 2: Rentabilidade no Mês Cheio (Atenção ao Risco de Imobilização)
+                if rendimento_call_ciclo < meta_mes_cheio_perc:
+                    st.error(f"📉 **Atenção (Perda no Mês Cheio):** Apesar do ganho proporcional, este prêmio não cobre o rendimento da Selic equivalente a um mês integral (**{meta_mes_cheio_perc:.2f}%**). Avalie se o capital imobilizado compensa o spread.")
+                else:
+                    st.success(f"🚀 **Superávit Mensal:** Excelente! A operação superou não só os dias investidos, mas rendeu mais do que a Selic geraria em um mês cheio inteiro (**{meta_mes_cheio_perc:.2f}%**).")
 
             if strike_call > 0 and strike_call < strike_minimo:
                 st.error("🚨 Atenção: O Strike da Call está configurado ABAIXO do ponto de equilíbrio, gerando risco de prejuízo no exercício compulsório.")
@@ -481,24 +547,19 @@ st.divider()
 # FASE 3: SIMULADOR DE PAYOFF COMPLETO
 # ==========================================
 st.header("🔮 Fase 3: Simulador de Desfecho (Payoff)")
-st.caption("Simule o preço do ativo no dia do vencimento para visualizar o comportamento estrutural e o P&L.")
-
 with st.container(border=True):
     max_slider = float(preco_acao * 2.0) if preco_acao > 0 else 100.0
     preco_vencimento = st.slider(
         "Preço em Tela do Ativo no Vencimento (R$)",
-        min_value=0.0,
-        max_value=max_slider,
-        value=float(preco_acao if preco_acao > 0 else 10.0),
-        step=0.10,
-        help="Arraste para a esquerda (queda) ou direita (alta) para testar o sistema de proteção."
+        min_value=0.0, max_value=max_slider,
+        value=float(preco_acao if preco_acao > 0 else 10.0), step=0.10
     )
 
     if preco_vencimento > strike_put and strike_put > 0:
         valor_residual_put = 0.0
     else:
         st.write("")
-        valor_residual_put_raw = st.number_input("Ação despencou. Qual o valor de revenda da Put na tela? (R$)", value=None, placeholder="Ex: 5.20", format="%.2f")
+        valor_residual_put_raw = st.number_input("Ação despencou. Qual o valor de revenda da Put na tela? (R$)", value=None, format="%.2f")
         valor_residual_put = valor_residual_put_raw if valor_residual_put_raw is not None else 0.0
 
     receita_venda_put_residual = valor_residual_put * qtd
@@ -532,7 +593,6 @@ with st.container(border=True):
     lucro_bruto_operacao = (receita_venda_ativo + receita_liquida_call_pre_ir + receita_venda_put_residual) - (custo_base_ajustado + taxa_saida_b3 + corretagem_saida)
     ir_devido_operacao = max(0.0, lucro_bruto_operacao * ir_opcoes)
     lucro_liquido_final = lucro_bruto_operacao - ir_devido_operacao
-
     rentabilidade_sobre_capital_inicial = (lucro_liquido_final / custo_base_bruto) * 100 if custo_base_bruto > 0 else 0.0
 
     mult_projetado = 1.0
@@ -597,10 +657,9 @@ with st.container(border=True):
 
     col_save1, col_save2 = st.columns([3, 1])
     with col_save1:
-        nome_projeto_salvar = st.text_input("Dê um nome ao seu Projeto (Para visualização no topo)", value=st.session_state['nome_estrategia_atual'], placeholder="Ex: PETR4 Carteira Aposentadoria")
+        nome_projeto_salvar = st.text_input("Dê um nome ao seu Projeto", value=st.session_state['nome_estrategia_atual'])
     with col_save2:
-        st.write("")
-        st.write("")
+        st.write(""); st.write("")
         if st.button("💾 Gravar Projeto na Nuvem", type="primary", use_container_width=True):
             if not nome_projeto_salvar.strip():
                 st.warning("⚠️ Forneça um nome para identificar a estratégia.")
@@ -637,32 +696,19 @@ with st.container(border=True):
 if st.session_state['historico_rolagens']:
     st.divider()
     st.subheader("📑 Livro-Razão e Memória de Cálculo")
-    st.caption("A tabela abaixo consolida o avanço do seu projeto. Sinta-se livre para editar valores em caso de erro direto na tabela.")
-
+    
     with st.container(border=True):
         df_base = pd.DataFrame(st.session_state['historico_rolagens'])
         if "Competência" in df_base.columns and "Série/Ciclo" not in df_base.columns:
             df_base.rename(columns={"Competência": "Série/Ciclo"}, inplace=True)
 
         df_corrigido = st.data_editor(
-            df_base,
-            use_container_width=True,
-            num_rows="dynamic",
+            df_base, use_container_width=True, num_rows="dynamic",
             column_config={
                 "Série/Ciclo": st.column_config.TextColumn("Identificador", required=True),
                 "Call Ref.": st.column_config.TextColumn("Call Ref."),
                 "Renda Opção Liq.": st.column_config.NumberColumn("Opções (Líquido)", format="R$ %.2f"),
                 "Dividendos/JSCP Liq.": st.column_config.NumberColumn("Proventos (Líquido)", format="R$ %.2f"),
-                "_Strike Call": None,
-                "_Premio Bruto Call": None,
-                "_Custos B3 e Corretagem Call": None,
-                "_DARF Retido Call": None,
-                "_Dividendos Isentos": None,
-                "_JSCP Bruto": None,
-                "_IR JSCP": None,
-                "_Data Montagem": None,
-                "_Data Vencimento": None,
-                "_Selic Ciclo": None
             }
         )
 
@@ -674,7 +720,7 @@ if st.session_state['historico_rolagens']:
         meses_consolidados_lista = [r.get("Série/Ciclo", r.get("Competência", "-")) for r in st.session_state['historico_rolagens']]
 
         if meses_consolidados_lista:
-            mes_extrato = st.selectbox("Selecione um ciclo para auditar os bastidores e os impostos retidos:", meses_consolidados_lista)
+            mes_extrato = st.selectbox("Selecione um ciclo:", meses_consolidados_lista)
             dados_mes = next((item for item in st.session_state['historico_rolagens'] if item.get("Série/Ciclo", item.get("Competência")) == mes_extrato), None)
 
             if dados_mes:
@@ -683,15 +729,15 @@ if st.session_state['historico_rolagens']:
                     st.markdown("**1. Operações (Derivativos)**")
                     st.write(f"Prêmio Bruto: R$ {dados_mes.get('_Premio Bruto Call', 0.0):,.2f}")
                     st.write(f"Emolumentos/Corret.: R$ -{dados_mes.get('_Custos B3 e Corretagem Call', 0.0):,.2f}")
-                    st.write(f"DARF (Mês Subseq.): R$ -{dados_mes.get('_DARF Retido Call', 0.0):,.2f}")
-                    st.info(f"**Resultado (Opções):** R$ {dados_mes.get('Renda Opção Liq.', 0.0):,.2f}")
+                    st.write(f"DARF: R$ -{dados_mes.get('_DARF Retido Call', 0.0):,.2f}")
+                    st.info(f"**Resultado:** R$ {dados_mes.get('Renda Opção Liq.', 0.0):,.2f}")
 
                 with c_ext2:
                     st.markdown("**2. Proventos (Ações)**")
                     st.write(f"Div. Isentos: R$ {dados_mes.get('_Dividendos Isentos', 0.0):,.2f}")
                     st.write(f"JSCP Bruto Declarado: R$ {dados_mes.get('_JSCP Bruto', 0.0):,.2f}")
-                    st.write(f"IRRF Fonte (JSCP): R$ -{dados_mes.get('_IR JSCP', 0.0):,.2f}")
-                    st.info(f"**Resultado (Proventos):** R$ {dados_mes.get('Dividendos/JSCP Liq.', 0.0):,.2f}")
+                    st.write(f"IRRF Fonte: R$ -{dados_mes.get('_IR JSCP', 0.0):,.2f}")
+                    st.info(f"**Resultado:** R$ {dados_mes.get('Dividendos/JSCP Liq.', 0.0):,.2f}")
 
                 with c_ext3:
                     st.markdown("**3. Caixa Total Deste Ciclo**")
@@ -700,7 +746,7 @@ if st.session_state['historico_rolagens']:
                     caixa_liquido_total = caixa_bruto_total - total_retencoes
 
                     st.write(f"Receitas Brutas: R$ {caixa_bruto_total:,.2f}")
-                    st.write(f"Saídas (Taxas + IR): R$ -{total_retencoes:,.2f}")
+                    st.write(f"Saídas: R$ -{total_retencoes:,.2f}")
                     st.success(f"**Depósito Limpo:** R$ {caixa_liquido_total:,.2f}")
 
 # ==========================================
@@ -738,36 +784,9 @@ with st.container(border=True):
 
     c_perf1, c_perf2, c_perf3, c_perf4, c_perf5, c_perf6 = st.columns(6)
 
-    c_perf1.metric(
-        label="Caixa Absoluto (All Time)",
-        value=f"{retorno_caixa_puro:.2f}%",
-        delta=f"R$ {caixa_total_gerado:,.2f}"
-    )
-    c_perf2.metric(
-        label="Selic Acumulada",
-        value=f"{meta_acumulada_realizada:.2f}%",
-        delta=f"{meses_consolidados} Ciclos Vencidos",
-        delta_color="off"
-    )
-    c_perf3.metric(
-        label="Fator Alpha (Alfa Gen.)",
-        value=f"{alpha_gerado:+.2f}%",
-        delta="Spread sobre a Selic" if alpha_gerado >= 0 else "Spread Negativo",
-        delta_color="normal"
-    )
-    c_perf4.metric(
-        label="Provisão DARF a Pagar",
-        value=f"R$ {darf_mes_atual:,.2f}",
-        delta="Aberto no Ciclo de Tela",
-        delta_color="inverse"
-    )
-    c_perf5.metric(
-        label="Ibovespa (30d)",
-        value=f"{perf_ibov:.2f}%",
-        delta="Benchmark Renda Variável"
-    )
-    c_perf6.metric(
-        label="Câmbio Dólar (30d)",
-        value=f"{perf_usd:.2f}%",
-        delta="Dólar PTAX (USD/BRL)"
-    )
+    c_perf1.metric("Caixa Absoluto (All Time)", f"{retorno_caixa_puro:.2f}%", f"R$ {caixa_total_gerado:,.2f}")
+    c_perf2.metric("Selic Acumulada", f"{meta_acumulada_realizada:.2f}%", f"{meses_consolidados} Ciclos Vencidos", delta_color="off")
+    c_perf3.metric("Fator Alpha (Alfa Gen.)", f"{alpha_gerado:+.2f}%", "Spread sobre a Selic" if alpha_gerado >= 0 else "Spread Negativo", delta_color="normal")
+    c_perf4.metric("Provisão DARF a Pagar", f"R$ {darf_mes_atual:,.2f}", "Aberto no Ciclo de Tela", delta_color="inverse")
+    c_perf5.metric("Ibovespa (30d)", f"{perf_ibov:.2f}%", "Benchmark Renda Variável")
+    c_perf6.metric("Câmbio Dólar (30d)", f"{perf_usd:.2f}%", "Dólar PTAX (USD/BRL)")
