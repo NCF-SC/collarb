@@ -6,7 +6,7 @@ import requests
 from supabase import create_client, Client
 
 # ==========================================
-# 0. CONFIGURAÇÃO VISUAL COMPLETA (WHITE-LABEL)
+# 0. CONFIGURAÇÃO VISUAL E TRADUÇÃO
 # ==========================================
 st.set_page_config(page_title="Gouldian Invest", page_icon="🦅", layout="wide")
 
@@ -19,6 +19,9 @@ REMOVER_BRANDING_CSS = """
 """
 st.markdown(REMOVER_BRANDING_CSS, unsafe_allow_html=True)
 
+MESES_CURTOS = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
+MESES_LONGOS = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
+
 @st.cache_resource
 def init_connection():
     url = st.secrets["SUPABASE_URL"]
@@ -27,17 +30,18 @@ def init_connection():
 
 try:
     supabase = init_connection()
-except Exception as e:
+except Exception:
     st.error("Erro na conexão segura de dados. Atualize a página.")
     st.stop()
 
 # ==========================================
-# FUNCTIONS DE GERENCIAMENTO DE ESTADOS (ANTI-QUEBRA)
+# GERENCIAMENTO DE ESTADOS (ANTI-QUEBRA)
 # ==========================================
 def inicializar_estrategia_vazia():
+    hoje = datetime.date.today()
     st.session_state['nome_estrategia_atual'] = ""
     st.session_state['historico_rolagens'] = []
-    st.session_state['ciclo_nome'] = f"Série {datetime.date.today().strftime('%b/%y')}"
+    st.session_state['ciclo_nome'] = f"Série {MESES_CURTOS[hoje.month-1]}/{hoje.strftime('%y')}"
     st.session_state['val_preco_acao'] = None
     st.session_state['val_qtd'] = None
     st.session_state['val_ticker_put'] = ""
@@ -48,12 +52,12 @@ def inicializar_estrategia_vazia():
     st.session_state['val_premio_call'] = None
     st.session_state['val_dividendos'] = None
     st.session_state['val_jscp'] = None
-    st.session_state['val_data_vencimento'] = datetime.date.today() + datetime.timedelta(days=21)
+    st.session_state['val_data_vencimento'] = hoje + datetime.timedelta(days=21)
 
 def carregar_estrategia_salva(nome, pkg):
     st.session_state['nome_estrategia_atual'] = nome
     st.session_state['historico_rolagens'] = pkg.get('historico_rolagens', [])
-    st.session_state['ciclo_nome'] = pkg.get('ciclo_nome', f"Série {datetime.date.today().strftime('%b/%y')}")
+    st.session_state['ciclo_nome'] = pkg.get('ciclo_nome', st.session_state.get('ciclo_nome', ""))
     st.session_state['val_preco_acao'] = pkg.get('preco_acao', None)
     st.session_state['val_qtd'] = pkg.get('qtd', None)
     st.session_state['val_ticker_put'] = pkg.get('ticker_put', "")
@@ -66,7 +70,9 @@ def carregar_estrategia_salva(nome, pkg):
     st.session_state['val_jscp'] = pkg.get('jscp', None)
     st.session_state['val_data_vencimento'] = datetime.date.today() + datetime.timedelta(days=21)
 
-# --- MOTOR DE BUSCA INSTITUCIONAL (BRAPI) V2 CORRIGIDO ---
+# ==========================================
+# MOTORES INSTITUCIONAIS E AUTOMAÇÃO
+# ==========================================
 def buscar_dados_opcao_brapi(underlying, target_ticker):
     if not underlying or not target_ticker:
         st.warning("⚠️ Informe o Ticker da Ação (Barra Lateral) e o Ticker da Opção para buscar.")
@@ -74,7 +80,7 @@ def buscar_dados_opcao_brapi(underlying, target_ticker):
 
     token = st.secrets.get("BRAPI_TOKEN", "")
     if not token:
-        st.error("🚨 ERRO: O sistema não encontrou o BRAPI_TOKEN nos Secrets.")
+        st.error("🚨 ERRO: BRAPI_TOKEN não encontrado.")
         return None
 
     headers = {"Authorization": f"Bearer {token}"}
@@ -101,14 +107,14 @@ def buscar_dados_opcao_brapi(underlying, target_ticker):
                         "strike": float(opcao.get("strike", 0.0)),
                         "vencimento": datetime.datetime.strptime(data_venc, "%Y-%m-%d").date()
                     }
-        st.warning(f"⚠️ Ticker '{target_ticker_clean}' não encontrado nos vencimentos ativos de '{underlying_clean}'.")
+        st.warning(f"⚠️ Ticker '{target_ticker_clean}' não encontrado nos vencimentos ativos.")
         return None
     except requests.exceptions.RequestException:
         return None
 
-@st.cache_data(ttl=300) # Cache de 5 min para não estourar limite da API
+@st.cache_data(ttl=300)
 def buscar_sugestoes_calls_cached(underlying, strike_minimo):
-    """Busca as Calls mais próximas e imediatamente superiores ao strike de segurança."""
+    """Busca Calls mensais (3ª sexta-feira) acima do break-even."""
     if not underlying or strike_minimo <= 0: return []
     
     token = st.secrets.get("BRAPI_TOKEN", "")
@@ -117,17 +123,25 @@ def buscar_sugestoes_calls_cached(underlying, strike_minimo):
     headers = {"Authorization": f"Bearer {token}"}
     underlying_clean = underlying.upper().replace(".SA", "")
     
+    def is_terceira_sexta(date_str):
+        d = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+        # Vencimentos mensais B3: 3ª sexta-feira do mês (dias 15 ao 21)
+        return d.weekday() == 4 and 15 <= d.day <= 21
+
     try:
         exp_url = f"https://brapi.dev/api/v2/options/expirations?underlying={underlying_clean}"
         resp_exp = requests.get(exp_url, headers=headers, timeout=5)
         if resp_exp.status_code != 200: return []
         
         vencimentos = resp_exp.json().get("expirations", [])
-        # Filtra vencimentos que já passaram para evitar distorções
-        venc_validos = [v for v in vencimentos if datetime.datetime.strptime(v, "%Y-%m-%d").date() > datetime.date.today()]
+        
+        # Filtra apenas vencimentos futuros que caiam na 3ª sexta-feira
+        venc_validos = [v for v in vencimentos if datetime.datetime.strptime(v, "%Y-%m-%d").date() > datetime.date.today() and is_terceira_sexta(v)]
+        
         if not venc_validos: return []
         
-        data_venc = venc_validos[0] # Pega o mais próximo
+        # Foca no vencimento mensal mais próximo
+        data_venc = venc_validos[0] 
         chain_url = f"https://brapi.dev/api/v2/options/chain?underlying={underlying_clean}&expirationDate={data_venc}"
         resp_chain = requests.get(chain_url, headers=headers, timeout=5)
         if resp_chain.status_code != 200: return []
@@ -136,15 +150,14 @@ def buscar_sugestoes_calls_cached(underlying, strike_minimo):
         calls = []
         for item in series:
             sym = item.get("symbol", "")
-            # Pela regra B3, a 5ª letra indica o mês de vencimento da Call (A a L)
+            # Pela regra B3, a 5ª letra indica o mês da Call (A a L)
             is_call = len(sym) >= 5 and sym[4].upper() in "ABCDEFGHIJKL"
             
             if is_call:
                 strike = float(item.get("strike", 0.0))
-                # Filtra apenas strikes que não dão prejuízo no capital base
                 if strike >= strike_minimo:
                     preco = float(item.get("close", 0.0))
-                    if preco > 0: # Remove opções sem liquidez recente
+                    if preco > 0: 
                         calls.append({
                             "Ticker": sym,
                             "Strike (R$)": strike,
@@ -152,7 +165,6 @@ def buscar_sugestoes_calls_cached(underlying, strike_minimo):
                             "Vencimento": data_venc
                         })
         
-        # Ordena pelo strike mais próximo do mínimo de segurança
         calls.sort(key=lambda x: x["Strike (R$)"])
         return calls[:5]
     except Exception:
@@ -254,15 +266,12 @@ if not st.session_state['logged_in']:
                                 st.error("Falha no cadastro (senha deve ter no mínimo 6 caracteres).")
 
             elif modo == "Esqueci a Senha":
-                st.info("🔧 Módulo de recuperação por e-mail em configuração temporária. Acione o suporte caso precise resetar.")
+                st.info("🔧 Módulo de recuperação em configuração temporária. Acione o suporte.")
     st.stop()
 
 # ==========================================
 # 2. SEÇÃO DE PERFIL E GERENCIAMENTO
 # ==========================================
-if 'val_data_vencimento' not in st.session_state:
-    st.session_state['val_data_vencimento'] = datetime.date.today() + datetime.timedelta(days=21)
-
 with st.container():
     c_header1, c_header2 = st.columns([8, 2])
     with c_header1:
@@ -283,7 +292,7 @@ with st.expander("👤 Meu Perfil & Carteira de Estratégias", expanded=True):
     if 'projeto_index' not in st.session_state:
         st.session_state['projeto_index'] = 0
 
-    projeto_escolhido = st.selectbox("📁 Selecione o Projeto / Estratégia em andamento:", opcoes_projeto, index=st.session_state['projeto_index'])
+    projeto_escolhido = st.selectbox("📁 Selecione o Projeto em andamento:", opcoes_projeto, index=st.session_state['projeto_index'])
 
     if 'ultimo_projeto_escolhido' not in st.session_state or st.session_state['ultimo_projeto_escolhido'] != projeto_escolhido:
         st.session_state['ultimo_projeto_escolhido'] = projeto_escolhido
@@ -314,7 +323,7 @@ caixa_total_gerado = caixa_acumulado_calls + caixa_proventos
 # ==========================================
 st.sidebar.image("https://cdn-icons-png.flaticon.com/512/2942/2942259.png", width=50)
 st.sidebar.header("🔍 Monitor de Cotação")
-ticker_acao = st.sidebar.text_input("Ticker da Ação", value="", placeholder="Ex: PETR4.SA", help="Adicione .SA para ativos brasileiros")
+ticker_acao = st.sidebar.text_input("Ticker da Ação", value="", placeholder="Ex: PETR4.SA")
 st.sidebar.markdown(f"**Preço de Tela Atual:** R$ {st.session_state['preco_acao_tela']:.2f}")
 
 if st.sidebar.button("Buscar Preço B3"):
@@ -331,7 +340,6 @@ st.sidebar.divider()
 st.sidebar.markdown("### Parâmetros Base")
 
 with st.sidebar.expander("⚙️ Custos Operacionais e IR", expanded=False):
-    st.caption("Ajuste as taxas conforme sua corretora.")
     ir_opcoes = st.number_input("IR Opções (%)", value=15.0, step=0.5) / 100
     ir_jscp_tax = st.number_input("IR JSCP (%)", value=15.0, step=0.5) / 100
     emol_acao = st.number_input("Emol. Ação (%)", value=0.0325, format="%.4f") / 100
@@ -340,7 +348,6 @@ with st.sidebar.expander("⚙️ Custos Operacionais e IR", expanded=False):
     taxa_ex_b3 = st.number_input("Taxa Exercício B3 (%)", value=0.5, step=0.1) / 100
 
 with st.sidebar.expander("🏦 Benchmark e Juros", expanded=False):
-    st.caption("Custo de oportunidade do capital.")
     juros_bruto_aa = st.number_input("Selic Bruta (% a.a.)", value=14.50, step=0.1) / 100
     ir_renda_fixa = st.number_input("IR Renda Fixa (%)", value=22.5, step=0.5) / 100
     juros_liquido_aa = juros_bruto_aa * (1 - ir_renda_fixa)
@@ -349,7 +356,6 @@ with st.sidebar.expander("🏦 Benchmark e Juros", expanded=False):
 # FASE 1: MONTAGEM DO MODELO E CRONOLOGIA
 # ==========================================
 st.header("📦 Fase 1: Estrutura Principal da Operação")
-st.caption("Configure os parâmetros de entrada e o cronograma do ciclo atual.")
 
 with st.container(border=True):
     col_cron1, col_cron2, col_vazio_cron = st.columns([2, 2, 4])
@@ -364,11 +370,17 @@ col1, col2, col3 = st.columns(3)
 with col1:
     with st.container(border=True):
         st.subheader("🏢 1. Ativo Base (Ação)")
-        preco_acao_raw = st.number_input("Preço de Aquisição (R$)", value=st.session_state['val_preco_acao'], placeholder="0.00", format="%.2f")
+        # Injeta automaticamente o preço buscado caso o input esteja vazio
+        valor_default_acao = st.session_state['val_preco_acao'] if st.session_state['val_preco_acao'] else (st.session_state['preco_acao_tela'] if st.session_state['preco_acao_tela'] > 0 else None)
+        
+        preco_acao_raw = st.number_input("Preço de Aquisição (R$)", value=valor_default_acao, placeholder="0.00", format="%.2f")
         qtd_raw = st.number_input("Quantidade Exposta", value=st.session_state['val_qtd'], placeholder="1000", step=100)
 
         preco_acao = preco_acao_raw if preco_acao_raw is not None else 0.0
         qtd = int(qtd_raw) if qtd_raw is not None else 0
+        
+        st.session_state['val_preco_acao'] = preco_acao
+        st.session_state['val_qtd'] = qtd
 
 with col2:
     with st.container(border=True):
@@ -376,11 +388,10 @@ with col2:
 
         c_put_tick, c_put_btn = st.columns([2, 1])
         with c_put_tick:
-            ticker_put = st.text_input("Ticker da Put", value=st.session_state['val_ticker_put'], placeholder="PETRR454")
+            ticker_put = st.text_input("Ticker da Put", value=st.session_state['val_ticker_put'], placeholder="Ex: PETRR454")
             st.session_state['val_ticker_put'] = ticker_put
         with c_put_btn:
-            st.write("")
-            st.write("")
+            st.write(""); st.write("")
             if st.button("⚡ Buscar", key="btn_put", use_container_width=True):
                 dados_api = buscar_dados_opcao_brapi(ticker_acao, ticker_put)
                 if dados_api:
@@ -401,7 +412,7 @@ with col2:
 
 # --- Cálculos Base ---
 volume_acao = volume_put = tx_b3_entrada_acao = tx_b3_entrada_put = taxas_iniciais_totais = 0.0
-custo_base_bruto = custo_base_ajustado = strike_minimo = preco_medio_atual = 0.0
+custo_base_bruto = custo_base_ajustado = strike_minimo = 0.0
 
 if qtd > 0:
     volume_acao = preco_acao * qtd
@@ -420,7 +431,7 @@ with col3:
         st.subheader("📊 3. Resumo Patrimonial")
         st.metric("Capital Inicial Imobilizado", f"R$ {custo_base_bruto:,.2f}")
         st.metric("Custo Linha Ajustado (PM)", f"R$ {custo_base_ajustado:,.2f}", f"Desconto Proventos: R$ {caixa_total_gerado:,.2f}", delta_color="inverse")
-        st.info(f"🎯 **Strike Call de Segurança:** R$ {strike_minimo:.2f}", icon="ℹ️")
+        st.info(f"🎯 **Strike Mínimo de Segurança:** R$ {strike_minimo:.2f}", icon="ℹ️")
 
 st.divider()
 
@@ -434,18 +445,29 @@ tab1, tab2 = st.tabs(["🔄 Lançamento de Call (Venda Coberta)", "💰 Provento
 with tab1:
     with st.container(border=True):
         
-        # Bloco de Sugestão Automática de Opções Seguras
+        # Bloco de Sugestão Automática e Auto-Fill
         if strike_minimo > 0 and ticker_acao:
             st.markdown(f"**Referência de Risco:** Strike Mínimo Seguro R$ {strike_minimo:.2f}")
             sugestoes = buscar_sugestoes_calls_cached(ticker_acao, strike_minimo)
+            
             if sugestoes:
                 melhor_call = sugestoes[0]
-                st.info(f"💡 **Sugestão Automática (Sem Risco de Exercício no PM):** A opção mais próxima é **{melhor_call['Ticker']}** (Strike R$ {melhor_call['Strike (R$)']:.2f} | R$ {melhor_call['Prêmio (R$)']:.2f})")
                 
-                with st.expander("🔎 Ver outras opções próximas e seguras (Expander)"):
+                # Auto-Fill Autônomo se os campos estiverem vazios
+                if not st.session_state['val_ticker_call']:
+                    st.session_state['val_ticker_call'] = melhor_call['Ticker']
+                    st.session_state['val_strike_call'] = melhor_call['Strike (R$)']
+                    st.session_state['val_premio_call'] = melhor_call['Prêmio (R$)']
+                    st.session_state['val_data_vencimento'] = datetime.datetime.strptime(melhor_call['Vencimento'], "%Y-%m-%d").date()
+                    st.toast("🤖 Automação: Call mais segura e rentável preenchida automaticamente.")
+                    st.rerun()
+
+                st.info(f"💡 **Sugestão Automática (Mensal):** A opção de 3ª sexta-feira mais próxima é **{melhor_call['Ticker']}** (Strike R$ {melhor_call['Strike (R$)']:.2f} | R$ {melhor_call['Prêmio (R$)']:.2f})")
+                
+                with st.expander("🔎 Ver outras opções mensais próximas e seguras"):
                     st.dataframe(pd.DataFrame(sugestoes), use_container_width=True)
             else:
-                st.caption("Aguardando ativos líquidos acima do ponto de equilíbrio na B3.")
+                st.caption("Aguardando ativos líquidos de vencimento mensal acima do ponto de equilíbrio.")
         
         st.divider()
 
@@ -453,11 +475,10 @@ with tab1:
         with col4:
             c_call_tick, c_call_btn = st.columns([2, 1])
             with c_call_tick:
-                ticker_call = st.text_input("Ticker da Call Lançada", value=st.session_state['val_ticker_call'], placeholder="Ex: PETRF54")
+                ticker_call = st.text_input("Ticker da Call Lançada", value=st.session_state['val_ticker_call'])
                 st.session_state['val_ticker_call'] = ticker_call
             with c_call_btn:
-                st.write("")
-                st.write("")
+                st.write(""); st.write("")
                 if st.button("⚡ Buscar", key="btn_call", use_container_width=True):
                     dados_api = buscar_dados_opcao_brapi(ticker_acao, ticker_call)
                     if dados_api:
@@ -481,14 +502,10 @@ with tab1:
             strike_call = strike_call_raw if strike_call_raw is not None else 0.0
             premio_call = premio_call_raw if premio_call_raw is not None else 0.0
 
-        # Matemática dos Dias Úteis e Selic Mês Cheio
         dias_uteis = len(pd.bdate_range(data_montagem, data_vencimento))
         dias_uteis = max(1, dias_uteis)
         
-        # Meta 1: O que a Selic rende APENAS nos dias em que o dinheiro ficou travado
         meta_ciclo_perc = (((1 + juros_liquido_aa) ** (dias_uteis / 252)) - 1) * 100
-        
-        # Meta 2: O que a Selic rende em um mês fiscal padrão fechado (21 dias úteis)
         meta_mes_cheio_perc = (((1 + juros_liquido_aa) ** (21 / 252)) - 1) * 100
 
         volume_call = premio_call * qtd
@@ -503,27 +520,28 @@ with tab1:
             c_ret1.metric("Crédito D+1 (Bruto Ajustado)", f"R$ {receita_liquida_call_pre_ir:,.2f}")
             c_ret2.metric("Crédito Efetivo (Pós-IR)", f"R$ {receita_realmente_liquida_call:,.2f}")
 
-            mes_pagamento_darf = (data_vencimento.replace(day=1) + datetime.timedelta(days=31)).strftime('%B/%Y').capitalize()
+            # Identificação do Mês de Pagamento do DARF em Português
+            data_darf = data_vencimento.replace(day=1) + datetime.timedelta(days=31)
+            mes_pagamento_darf = f"{MESES_LONGOS[data_darf.month-1]} de {data_darf.year}"
+            
             st.caption(f"🧾 **Provisão Tributária:** A DARF gerada neste ciclo é de **R$ {ir_isolado_call_po:,.2f}**, devida no último dia útil de **{mes_pagamento_darf}**.")
 
             if premio_call > 0 and custo_base_bruto > 0:
                 rendimento_call_ciclo = (receita_realmente_liquida_call / custo_base_bruto) * 100
                 st.write("")
                 
-                # Validação 1: Rentabilidade Proporcional
                 if rendimento_call_ciclo < meta_ciclo_perc:
                     st.warning(f"⚠️ **Alerta de Custo de Oportunidade:** Prêmio líquido (**{rendimento_call_ciclo:.2f}%**) é menor que a Selic proporcional do ciclo (**{meta_ciclo_perc:.2f}%**).")
                 else:
-                    st.success(f"🎯 **Operação Eficiente (Proporcional):** Prêmio líquido (**{rendimento_call_ciclo:.2f}%**) superior à Selic proporcional do ciclo (**{meta_ciclo_perc:.2f}%**).")
+                    st.success(f"🎯 **Operação Eficiente (Proporcional):** Prêmio líquido (**{rendimento_call_ciclo:.2f}%**) superior à Selic proporcional (**{meta_ciclo_perc:.2f}%**).")
 
-                # Validação 2: Rentabilidade no Mês Cheio (Atenção ao Risco de Imobilização)
                 if rendimento_call_ciclo < meta_mes_cheio_perc:
-                    st.error(f"📉 **Atenção (Perda no Mês Cheio):** Apesar do ganho proporcional, este prêmio não cobre o rendimento da Selic equivalente a um mês integral (**{meta_mes_cheio_perc:.2f}%**). Avalie se o capital imobilizado compensa o spread.")
+                    st.error(f"📉 **Atenção (Perda no Mês Cheio):** Apesar do ganho proporcional, este prêmio não cobre o rendimento da Selic equivalente a um mês integral (**{meta_mes_cheio_perc:.2f}%**).")
                 else:
                     st.success(f"🚀 **Superávit Mensal:** Excelente! A operação superou não só os dias investidos, mas rendeu mais do que a Selic geraria em um mês cheio inteiro (**{meta_mes_cheio_perc:.2f}%**).")
 
             if strike_call > 0 and strike_call < strike_minimo:
-                st.error("🚨 Atenção: O Strike da Call está configurado ABAIXO do ponto de equilíbrio, gerando risco de prejuízo no exercício compulsório.")
+                st.error("🚨 Atenção: O Strike da Call está configurado ABAIXO do ponto de equilíbrio, gerando risco financeiro na venda compulsória.")
 
 with tab2:
     with st.container(border=True):
@@ -641,9 +659,9 @@ with st.container(border=True):
                 }
                 st.session_state['historico_rolagens'].append(novo_registro)
 
-                meses_nomes = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
+                # Próximo nome de ciclo autônomo
                 prox_data = data_vencimento + datetime.timedelta(days=21)
-                st.session_state['ciclo_nome'] = f"Série {meses_nomes[prox_data.month-1]}/{prox_data.strftime('%y')}"
+                st.session_state['ciclo_nome'] = f"Série {MESES_CURTOS[prox_data.month-1]}/{prox_data.strftime('%y')}"
                 st.rerun()
             else:
                 st.error("Preencha a quantidade do Ativo Base antes de salvar.")
